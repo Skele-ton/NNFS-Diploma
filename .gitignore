@@ -2,6 +2,7 @@
 
 NNFS_Diploma
 NNFS_Diploma.exe
+doctest.h
 *.exe
 *.out
 
