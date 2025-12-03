@@ -20,7 +20,7 @@ class Matrix
 public:
     size_t rows;
     size_t cols;
-    VecD data;
+    std::vector<double> data;
 
     Matrix() : rows(0), cols(0), data() {}
 
@@ -184,6 +184,31 @@ public:
     }
 };
 
+// activations
+class ActivationReLU
+{
+public:
+    MatD inputs;
+    MatD output;
+
+    void forward(const MatD& inputs_batch)
+    {
+        inputs = inputs_batch;
+        output.assign(inputs.rows, inputs.cols);
+        for (size_t i = 0; i < inputs.rows; ++i) {
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                double v = inputs(i, j);
+                
+                if (v > 0.0) {
+                    output(i, j) = v;
+                } else {
+                    output(i, j) = 0.0;
+                }
+            }
+        }
+    }
+};
+
 #ifndef NNFS_NO_MAIN
 int main()
 {
@@ -194,10 +219,13 @@ int main()
     LayerDense dense1(2, 3);
     dense1.forward(X);
 
-    cout << "Dense layer output, first 5 samples:\n";
-    for (size_t i = 0; i < 5 && i < dense1.output.rows; ++i) {
-        for (size_t j = 0; j < dense1.output.cols; ++j) {
-            cout << dense1.output(i, j) << ' ';
+    ActivationReLU activation1;
+    activation1.forward(dense1.output);
+
+    cout << "ReLU activation output, first 5 samples:\n";
+    for (size_t i = 0; i < 5 && i < activation1.output.rows; ++i) {
+        for (size_t j = 0; j < activation1.output.cols; ++j) {
+            cout << activation1.output(i, j) << ' ';
         }
         cout << '\n';
     }
