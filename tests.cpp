@@ -25,23 +25,35 @@ TEST_CASE("Matrix basic operations")
 TEST_CASE("Matrix empty and transpose on empty")
 {
     MatD m;
-    CHECK(m.empty() == true);
+    CHECK(m.is_empty() == true);
 
     MatD t = transpose(m);
-    CHECK(t.empty() == true);
+    CHECK(t.is_empty() == true);
 }
 
 // matmul tests
 TEST_CASE("matmul multiplies small matrices correctly")
 {
     MatD a(2, 3);
-    a(0, 0) = 1.0; a(0, 1) = 2.0; a(0, 2) = 3.0;
-    a(1, 0) = 4.0; a(1, 1) = 5.0; a(1, 2) = 6.0;
+
+    a(0, 0) = 1.0;
+    a(0, 1) = 2.0;
+    a(0, 2) = 3.0;
+
+    a(1, 0) = 4.0;
+    a(1, 1) = 5.0;
+    a(1, 2) = 6.0;
 
     MatD b(3, 2);
-    b(0, 0) = 7.0;  b(0, 1) = 8.0;
-    b(1, 0) = 9.0;  b(1, 1) = 10.0;
-    b(2, 0) = 11.0; b(2, 1) = 12.0;
+
+    b(0, 0) = 7.0;
+    b(0, 1) = 8.0;
+
+    b(1, 0) = 9.0;
+    b(1, 1) = 10.0;
+
+    b(2, 0) = 11.0;
+    b(2, 1) = 12.0;
 
     MatD c = matmul(a, b);
     CHECK(c.rows == 2);
@@ -75,8 +87,14 @@ TEST_CASE("matmul throws on incompatible shapes")
 TEST_CASE("transpose swaps rows and columns and values")
 {
     MatD m(2, 3);
-    m(0, 0) = 1.0; m(0, 1) = 2.0; m(0, 2) = 3.0;
-    m(1, 0) = 4.0; m(1, 1) = 5.0; m(1, 2) = 6.0;
+
+    m(0, 0) = 1.0;
+    m(0, 1) = 2.0;
+    m(0, 2) = 3.0;
+
+    m(1, 0) = 4.0;
+    m(1, 1) = 5.0;
+    m(1, 2) = 6.0;
 
     MatD t = transpose(m);
     CHECK(t.rows == 3);
@@ -136,15 +154,39 @@ TEST_CASE("layer_forward_batch matches known example")
 {
     // inputs: 3 samples x 4 features
     MatD inputs(3, 4);
-    inputs(0, 0) = 1.0;  inputs(0, 1) = 2.0;  inputs(0, 2) = 3.0;  inputs(0, 3) = 2.5;
-    inputs(1, 0) = 2.0;  inputs(1, 1) = 5.0;  inputs(1, 2) = -1.0; inputs(1, 3) = 2.0;
-    inputs(2, 0) = -1.5; inputs(2, 1) = 2.7;  inputs(2, 2) = 3.3;  inputs(2, 3) = -0.8;
+
+    inputs(0, 0) = 1.0;
+    inputs(0, 1) = 2.0;
+    inputs(0, 2) = 3.0;
+    inputs(0, 3) = 2.5;
+
+    inputs(1, 0) = 2.0;
+    inputs(1, 1) = 5.0;
+    inputs(1, 2) = -1.0;
+    inputs(1, 3) = 2.0;
+
+    inputs(2, 0) = -1.5;
+    inputs(2, 1) = 2.7;
+    inputs(2, 2) = 3.3;
+    inputs(2, 3) = -0.8;
 
     // weights: 3 neurons x 4 inputs
     MatD weights(3, 4);
-    weights(0, 0) = 0.2;   weights(0, 1) = 0.8;   weights(0, 2) = -0.5;  weights(0, 3) = 1.0;
-    weights(1, 0) = 0.5;   weights(1, 1) = -0.91; weights(1, 2) = 0.26;  weights(1, 3) = -0.5;
-    weights(2, 0) = -0.26; weights(2, 1) = -0.27; weights(2, 2) = 0.17;  weights(2, 3) = 0.87;
+
+    weights(0, 0) = 0.2;
+    weights(0, 1) = 0.8;
+    weights(0, 2) = -0.5;
+    weights(0, 3) = 1.0;
+
+    weights(1, 0) = 0.5;
+    weights(1, 1) = -0.91;
+    weights(1, 2) = 0.26;
+    weights(1, 3) = -0.5;
+
+    weights(2, 0) = -0.26;
+    weights(2, 1) = -0.27;
+    weights(2, 2) = 0.17;
+    weights(2, 3) = 0.87;
 
     VecD biases = {2.0, 3.0, 0.5};
 
@@ -186,16 +228,39 @@ TEST_CASE("LayerDense forward with custom weights and biases")
 {
     // prepare inputs as above example
     MatD inputs(3, 4);
-    inputs(0, 0) = 1.0;  inputs(0, 1) = 2.0;  inputs(0, 2) = 3.0;  inputs(0, 3) = 2.5;
-    inputs(1, 0) = 2.0;  inputs(1, 1) = 5.0;  inputs(1, 2) = -1.0; inputs(1, 3) = 2.0;
-    inputs(2, 0) = -1.5; inputs(2, 1) = 2.7;  inputs(2, 2) = 3.3;  inputs(2, 3) = -0.8;
+    
+    inputs(0, 0) = 1.0;
+    inputs(0, 1) = 2.0;
+    inputs(0, 2) = 3.0;
+    inputs(0, 3) = 2.5;
+
+    inputs(1, 0) = 2.0;
+    inputs(1, 1) = 5.0;
+    inputs(1, 2) = -1.0;
+    inputs(1, 3) = 2.0;
+
+    inputs(2, 0) = -1.5;
+    inputs(2, 1) = 2.7;
+    inputs(2, 2) = 3.3;
+    inputs(2, 3) = -0.8;
 
     LayerDense layer(4, 3);        // will override weights/biases
     layer.weights.assign(3, 4);    // 3 neurons x 4 inputs
 
-    layer.weights(0, 0) = 0.2;   layer.weights(0, 1) = 0.8;   layer.weights(0, 2) = -0.5;  layer.weights(0, 3) = 1.0;
-    layer.weights(1, 0) = 0.5;   layer.weights(1, 1) = -0.91; layer.weights(1, 2) = 0.26;  layer.weights(1, 3) = -0.5;
-    layer.weights(2, 0) = -0.26; layer.weights(2, 1) = -0.27; layer.weights(2, 2) = 0.17;  layer.weights(2, 3) = 0.87;
+    layer.weights(0, 0) = 0.2;
+    layer.weights(0, 1) = 0.8;
+    layer.weights(0, 2) = -0.5;
+    layer.weights(0, 3) = 1.0;
+
+    layer.weights(1, 0) = 0.5;
+    layer.weights(1, 1) = -0.91;
+    layer.weights(1, 2) = 0.26;
+    layer.weights(1, 3) = -0.5;
+
+    layer.weights(2, 0) = -0.26;
+    layer.weights(2, 1) = -0.27;
+    layer.weights(2, 2) = 0.17;
+    layer.weights(2, 3) = 0.87;
 
     layer.biases = {2.0, 3.0, 0.5};
 
@@ -233,3 +298,94 @@ TEST_CASE("LayerDense output shape matches inputs and neuron count")
     CHECK(dense.output.rows == X.rows);
     CHECK(dense.output.cols == 4);
 }
+
+// ActivationReLU tests
+TEST_CASE("ActivationReLU sets negatives to zero and keeps positives")
+{
+    MatD inputs(2, 3);
+
+    inputs(0, 0) = -1.0;
+    inputs(0, 1) = 0.0;
+    inputs(0, 2) = 2.5;
+
+    inputs(1, 0) = 3.0;
+    inputs(1, 1) = -0.1;
+    inputs(1, 2) = 0.0;
+
+    ActivationReLU activation;
+    activation.forward(inputs);
+
+    // shape preserved
+    CHECK(activation.output.rows == inputs.rows);
+    CHECK(activation.output.cols == inputs.cols);
+
+    // inputs stored correctly
+    CHECK(activation.inputs.rows == inputs.rows);
+    CHECK(activation.inputs.cols == inputs.cols);
+    for (size_t i = 0; i < inputs.rows; ++i) {
+        for (size_t j = 0; j < inputs.cols; ++j) {
+            CHECK(activation.inputs(i, j) == doctest::Approx(inputs(i, j)));
+        }
+    }
+
+    // negatives -> 0, non-negatives unchanged
+    CHECK(activation.output(0, 0) == doctest::Approx(0.0));   // -1.0 -> 0
+    CHECK(activation.output(0, 1) == doctest::Approx(0.0));   // 0.0 stays 0
+    CHECK(activation.output(0, 2) == doctest::Approx(2.5));   // 2.5 stays 2.5
+
+    CHECK(activation.output(1, 0) == doctest::Approx(3.0));   // 3.0 stays 3.0
+    CHECK(activation.output(1, 1) == doctest::Approx(0.0));   // -0.1 -> 0
+    CHECK(activation.output(1, 2) == doctest::Approx(0.0));   // 0.0 stays 0
+}
+
+// ActivationSoftmax tests
+TEST_CASE("ActivationSoftmax computes correct probabilities per row")
+{
+    MatD inputs(2, 3);
+
+    // Row 0: [0, 1, 2] -> softmax ≈ [0.09003, 0.24473, 0.66524]
+    inputs(0, 0) = 0.0;
+    inputs(0, 1) = 1.0;
+    inputs(0, 2) = 2.0;
+
+    // Row 1: [0, 0, 0] -> softmax = [1/3, 1/3, 1/3]
+    inputs(1, 0) = 0.0;
+    inputs(1, 1) = 0.0;
+    inputs(1, 2) = 0.0;
+
+    ActivationSoftmax activation;
+    activation.forward(inputs);
+
+    // shape preserved
+    CHECK(activation.output.rows == inputs.rows);
+    CHECK(activation.output.cols == inputs.cols);
+
+    // inputs stored correctly
+    CHECK(activation.inputs.rows == inputs.rows);
+    CHECK(activation.inputs.cols == inputs.cols);
+    for (size_t i = 0; i < inputs.rows; ++i) {
+        for (size_t j = 0; j < inputs.cols; ++j) {
+            CHECK(activation.inputs(i, j) == doctest::Approx(inputs(i, j)));
+        }
+    }
+
+    // Row 0 probabilities (approximate known softmax)
+    CHECK(activation.output(0, 0) == doctest::Approx(0.0900306));
+    CHECK(activation.output(0, 1) == doctest::Approx(0.2447285));
+    CHECK(activation.output(0, 2) == doctest::Approx(0.6652409));
+
+    // Row 1 probabilities (uniform)
+    CHECK(activation.output(1, 0) == doctest::Approx(1.0 / 3.0));
+    CHECK(activation.output(1, 1) == doctest::Approx(1.0 / 3.0));
+    CHECK(activation.output(1, 2) == doctest::Approx(1.0 / 3.0));
+
+    // Each row sums to 1
+    for (size_t i = 0; i < activation.output.rows; ++i) {
+        double sum = 0.0;
+        for (size_t j = 0; j < activation.output.cols; ++j) {
+            sum += activation.output(i, j);
+        }
+        CHECK(sum == doctest::Approx(1.0));
+    }
+}
+

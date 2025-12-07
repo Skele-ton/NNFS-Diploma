@@ -11,6 +11,7 @@ using std::mt19937;
 using std::normal_distribution;
 using std::sin;
 using std::cos;
+using std::exp;
 
 using VecD = std::vector<double>;
 using VecI = std::vector<int>;
@@ -20,7 +21,7 @@ class Matrix
 public:
     size_t rows;
     size_t cols;
-    std::vector<double> data;
+    VecD data;
 
     Matrix() : rows(0), cols(0), data() {}
 
@@ -34,7 +35,7 @@ public:
         data.assign(r * c, value);
     }
 
-    bool empty() const
+    bool is_empty() const
     {
         return rows == 0 || cols == 0;
     }
@@ -64,7 +65,7 @@ double random_normal()
 // math
 MatD matmul(const MatD& a, const MatD& b)
 {
-    if (a.empty() || b.empty()) {
+    if (a.is_empty() || b.is_empty()) {
         throw runtime_error("matmul: matrices must not be empty");
     }
 
@@ -88,7 +89,7 @@ MatD matmul(const MatD& a, const MatD& b)
 
 MatD transpose(const MatD& m)
 {
-    if (m.empty()) {
+    if (m.is_empty()) {
         return MatD();
     }
 
@@ -114,21 +115,21 @@ void generate_spiral_data(int samples_per_class, int classes, MatD& X_out, VecI&
     X_out.assign(static_cast<size_t>(total_samples), 2);
     y_out.assign(static_cast<size_t>(total_samples), 0);
 
-    for (int class_ix = 0; class_ix < classes; ++class_ix) {
-        int class_offset = class_ix * samples_per_class;
+    for (int class_idx = 0; class_idx < classes; ++class_idx) {
+        int class_offset = class_idx * samples_per_class;
         for (int i = 0; i < samples_per_class; ++i) {
             double r = static_cast<double>(i) / (samples_per_class - 1);
-            double theta = static_cast<double>(class_ix) * 4.0 + r * 4.0;
+            double theta = static_cast<double>(class_idx) * 4.0 + r * 4.0;
             theta += random_normal() * 0.2;
 
             double x = r * sin(theta);
             double y = r * cos(theta);
 
-            int ix = class_offset + i;
-            size_t s_ix = static_cast<size_t>(ix);
-            X_out(s_ix, 0) = x;
-            X_out(s_ix, 1) = y;
-            y_out[s_ix] = class_ix;
+            int idx = class_offset + i;
+            size_t s_idx = static_cast<size_t>(idx);
+            X_out(s_idx, 0) = x;
+            X_out(s_idx, 1) = y;
+            y_out[s_idx] = class_idx;
         }
     }
 }
@@ -198,12 +199,49 @@ public:
         for (size_t i = 0; i < inputs.rows; ++i) {
             for (size_t j = 0; j < inputs.cols; ++j) {
                 double v = inputs(i, j);
-                
                 if (v > 0.0) {
                     output(i, j) = v;
                 } else {
                     output(i, j) = 0.0;
                 }
+            }
+        }
+    }
+};
+
+class ActivationSoftmax
+{
+public:
+    MatD inputs;
+    MatD output;
+
+    void forward(const MatD& inputs_batch)
+    {
+        inputs = inputs_batch;
+        output.assign(inputs.rows, inputs.cols);
+
+        for (size_t i = 0; i < inputs.rows; ++i) {
+            double max_val = inputs(i, 0);
+            for (size_t j = 1; j < inputs.cols; ++j) {
+                double v = inputs(i, j);
+                if (v > max_val) {
+                    max_val = v;
+                }
+            }
+
+            double sum = 0.0;
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                double e = exp(inputs(i, j) - max_val);
+                output(i, j) = e;
+                sum += e;
+            }
+
+            if (sum == 0.0) {
+                throw runtime_error("ActivationSoftmax: sum of exponentials is zero");
+            }
+
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                output(i, j) /= sum;
             }
         }
     }
@@ -217,15 +255,20 @@ int main()
     generate_spiral_data(100, 3, X, y);
 
     LayerDense dense1(2, 3);
-    dense1.forward(X);
-
     ActivationReLU activation1;
+    LayerDense dense2(3, 3);
+    ActivationSoftmax activation2;
+
+    dense1.forward(X);
     activation1.forward(dense1.output);
 
-    cout << "ReLU activation output, first 5 samples:\n";
-    for (size_t i = 0; i < 5 && i < activation1.output.rows; ++i) {
-        for (size_t j = 0; j < activation1.output.cols; ++j) {
-            cout << activation1.output(i, j) << ' ';
+    dense2.forward(activation1.output);
+    activation2.forward(dense2.output);
+
+    cout << "Softmax output, first 5 samples:\n";
+    for (size_t i = 0; i < 5 && i < activation2.output.rows; ++i) {
+        for (size_t j = 0; j < activation2.output.cols; ++j) {
+            cout << activation2.output(i, j) << ' ';
         }
         cout << '\n';
     }
