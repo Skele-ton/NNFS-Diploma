@@ -6,6 +6,9 @@ NNFS_Diploma
 NNFS_Diploma.exe
 doctest.h
 tests
+tests_bin
+tests.gcda
+tests.gcno
 *.exe
 *.out
 

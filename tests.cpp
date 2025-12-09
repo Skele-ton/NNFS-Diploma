@@ -4,7 +4,7 @@
 #define NNFS_NO_MAIN
 #include "NNFS_Diploma.cpp"
 
-// Matrix tests
+//matrix tests
 TEST_CASE("Matrix basic operations")
 {
     MatD m(2, 3, 1.5);
@@ -35,25 +35,13 @@ TEST_CASE("Matrix empty and transpose on empty")
 TEST_CASE("matmul multiplies small matrices correctly")
 {
     MatD a(2, 3);
-
-    a(0, 0) = 1.0;
-    a(0, 1) = 2.0;
-    a(0, 2) = 3.0;
-
-    a(1, 0) = 4.0;
-    a(1, 1) = 5.0;
-    a(1, 2) = 6.0;
+    a(0, 0) = 1.0; a(0, 1) = 2.0; a(0, 2) = 3.0;
+    a(1, 0) = 4.0; a(1, 1) = 5.0; a(1, 2) = 6.0;
 
     MatD b(3, 2);
-
-    b(0, 0) = 7.0;
-    b(0, 1) = 8.0;
-
-    b(1, 0) = 9.0;
-    b(1, 1) = 10.0;
-
-    b(2, 0) = 11.0;
-    b(2, 1) = 12.0;
+    b(0, 0) = 7.0; b(0, 1) = 8.0;
+    b(1, 0) = 9.0; b(1, 1) = 10.0;
+    b(2, 0) = 11.0; b(2, 1) = 12.0;
 
     MatD c = matmul(a, b);
     CHECK(c.rows == 2);
@@ -87,14 +75,8 @@ TEST_CASE("matmul throws on incompatible shapes")
 TEST_CASE("transpose swaps rows and columns and values")
 {
     MatD m(2, 3);
-
-    m(0, 0) = 1.0;
-    m(0, 1) = 2.0;
-    m(0, 2) = 3.0;
-
-    m(1, 0) = 4.0;
-    m(1, 1) = 5.0;
-    m(1, 2) = 6.0;
+    m(0, 0) = 1.0; m(0, 1) = 2.0; m(0, 2) = 3.0;
+    m(1, 0) = 4.0; m(1, 1) = 5.0; m(1, 2) = 6.0;
 
     MatD t = transpose(m);
     CHECK(t.rows == 3);
@@ -106,6 +88,42 @@ TEST_CASE("transpose swaps rows and columns and values")
     CHECK(t(1, 1) == doctest::Approx(5.0));
     CHECK(t(2, 0) == doctest::Approx(3.0));
     CHECK(t(2, 1) == doctest::Approx(6.0));
+}
+
+// clip_matrix tests
+TEST_CASE("clip_matrix clamps values to bounds")
+{
+    MatD m(2, 3);
+    m(0, 0) = -1.0; m(0, 1) = 0.2; m(0, 2) = 1.5;
+    m(1, 0) = 0.8; m(1, 1) = 0.0; m(1, 2) = 2.0;
+
+    MatD clipped = clip_matrix(m, 0.1, 1.0);
+
+    CHECK(clipped(0, 0) == doctest::Approx(0.1));
+    CHECK(clipped(0, 1) == doctest::Approx(0.2));
+    CHECK(clipped(0, 2) == doctest::Approx(1.0));
+    CHECK(clipped(1, 0) == doctest::Approx(0.8));
+    CHECK(clipped(1, 1) == doctest::Approx(0.1));
+    CHECK(clipped(1, 2) == doctest::Approx(1.0));
+}
+
+TEST_CASE("clip_matrix throws when min exceeds max")
+{
+    MatD m(1, 1, 0.0);
+    CHECK_THROWS_AS(clip_matrix(m, 2.0, 1.0), runtime_error);
+}
+
+// mean tests
+TEST_CASE("mean returns correct average")
+{
+    VecD v = {1.0, 2.0, 3.0, 4.0};
+    CHECK(mean(v) == doctest::Approx(2.5));
+}
+
+TEST_CASE("mean throws on empty vector")
+{
+    VecD v;
+    CHECK_THROWS_AS(mean(v), runtime_error);
 }
 
 // generate_spiral_data tests
@@ -154,39 +172,15 @@ TEST_CASE("layer_forward_batch matches known example")
 {
     // inputs: 3 samples x 4 features
     MatD inputs(3, 4);
-
-    inputs(0, 0) = 1.0;
-    inputs(0, 1) = 2.0;
-    inputs(0, 2) = 3.0;
-    inputs(0, 3) = 2.5;
-
-    inputs(1, 0) = 2.0;
-    inputs(1, 1) = 5.0;
-    inputs(1, 2) = -1.0;
-    inputs(1, 3) = 2.0;
-
-    inputs(2, 0) = -1.5;
-    inputs(2, 1) = 2.7;
-    inputs(2, 2) = 3.3;
-    inputs(2, 3) = -0.8;
+    inputs(0, 0) = 1.0; inputs(0, 1) = 2.0; inputs(0, 2) = 3.0; inputs(0, 3) = 2.5;
+    inputs(1, 0) = 2.0; inputs(1, 1) = 5.0; inputs(1, 2) = -1.0; inputs(1, 3) = 2.0;
+    inputs(2, 0) = -1.5; inputs(2, 1) = 2.7; inputs(2, 2) = 3.3; inputs(2, 3) = -0.8;
 
     // weights: 3 neurons x 4 inputs
     MatD weights(3, 4);
-
-    weights(0, 0) = 0.2;
-    weights(0, 1) = 0.8;
-    weights(0, 2) = -0.5;
-    weights(0, 3) = 1.0;
-
-    weights(1, 0) = 0.5;
-    weights(1, 1) = -0.91;
-    weights(1, 2) = 0.26;
-    weights(1, 3) = -0.5;
-
-    weights(2, 0) = -0.26;
-    weights(2, 1) = -0.27;
-    weights(2, 2) = 0.17;
-    weights(2, 3) = 0.87;
+    weights(0, 0) = 0.2; weights(0, 1) = 0.8; weights(0, 2) = -0.5; weights(0, 3) = 1.0;
+    weights(1, 0) = 0.5; weights(1, 1) = -0.91; weights(1, 2) = 0.26; weights(1, 3) = -0.5;
+    weights(2, 0) = -0.26; weights(2, 1) = -0.27; weights(2, 2) = 0.17; weights(2, 3) = 0.87;
 
     VecD biases = {2.0, 3.0, 0.5};
 
@@ -228,39 +222,16 @@ TEST_CASE("LayerDense forward with custom weights and biases")
 {
     // prepare inputs as above example
     MatD inputs(3, 4);
-    
-    inputs(0, 0) = 1.0;
-    inputs(0, 1) = 2.0;
-    inputs(0, 2) = 3.0;
-    inputs(0, 3) = 2.5;
-
-    inputs(1, 0) = 2.0;
-    inputs(1, 1) = 5.0;
-    inputs(1, 2) = -1.0;
-    inputs(1, 3) = 2.0;
-
-    inputs(2, 0) = -1.5;
-    inputs(2, 1) = 2.7;
-    inputs(2, 2) = 3.3;
-    inputs(2, 3) = -0.8;
+    inputs(0, 0) = 1.0; inputs(0, 1) = 2.0; inputs(0, 2) = 3.0; inputs(0, 3) = 2.5;
+    inputs(1, 0) = 2.0; inputs(1, 1) = 5.0; inputs(1, 2) = -1.0; inputs(1, 3) = 2.0;
+    inputs(2, 0) = -1.5; inputs(2, 1) = 2.7; inputs(2, 2) = 3.3; inputs(2, 3) = -0.8;
 
     LayerDense layer(4, 3);        // will override weights/biases
     layer.weights.assign(3, 4);    // 3 neurons x 4 inputs
 
-    layer.weights(0, 0) = 0.2;
-    layer.weights(0, 1) = 0.8;
-    layer.weights(0, 2) = -0.5;
-    layer.weights(0, 3) = 1.0;
-
-    layer.weights(1, 0) = 0.5;
-    layer.weights(1, 1) = -0.91;
-    layer.weights(1, 2) = 0.26;
-    layer.weights(1, 3) = -0.5;
-
-    layer.weights(2, 0) = -0.26;
-    layer.weights(2, 1) = -0.27;
-    layer.weights(2, 2) = 0.17;
-    layer.weights(2, 3) = 0.87;
+    layer.weights(0, 0) = 0.2; layer.weights(0, 1) = 0.8; layer.weights(0, 2) = -0.5; layer.weights(0, 3) = 1.0;
+    layer.weights(1, 0) = 0.5; layer.weights(1, 1) = -0.91; layer.weights(1, 2) = 0.26; layer.weights(1, 3) = -0.5;
+    layer.weights(2, 0) = -0.26; layer.weights(2, 1) = -0.27; layer.weights(2, 2) = 0.17; layer.weights(2, 3) = 0.87;
 
     layer.biases = {2.0, 3.0, 0.5};
 
@@ -303,14 +274,8 @@ TEST_CASE("LayerDense output shape matches inputs and neuron count")
 TEST_CASE("ActivationReLU sets negatives to zero and keeps positives")
 {
     MatD inputs(2, 3);
-
-    inputs(0, 0) = -1.0;
-    inputs(0, 1) = 0.0;
-    inputs(0, 2) = 2.5;
-
-    inputs(1, 0) = 3.0;
-    inputs(1, 1) = -0.1;
-    inputs(1, 2) = 0.0;
+    inputs(0, 0) = -1.0; inputs(0, 1) = 0.0; inputs(0, 2) = 2.5;
+    inputs(1, 0) = 3.0; inputs(1, 1) = -0.1; inputs(1, 2) = 0.0;
 
     ActivationReLU activation;
     activation.forward(inputs);
@@ -344,14 +309,10 @@ TEST_CASE("ActivationSoftmax computes correct probabilities per row")
     MatD inputs(2, 3);
 
     // Row 0: [0, 1, 2] -> softmax ≈ [0.09003, 0.24473, 0.66524]
-    inputs(0, 0) = 0.0;
-    inputs(0, 1) = 1.0;
-    inputs(0, 2) = 2.0;
+    inputs(0, 0) = 0.0; inputs(0, 1) = 1.0; inputs(0, 2) = 2.0;
 
     // Row 1: [0, 0, 0] -> softmax = [1/3, 1/3, 1/3]
-    inputs(1, 0) = 0.0;
-    inputs(1, 1) = 0.0;
-    inputs(1, 2) = 0.0;
+    inputs(1, 0) = 0.0; inputs(1, 1) = 0.0; inputs(1, 2) = 0.0;
 
     ActivationSoftmax activation;
     activation.forward(inputs);
@@ -389,3 +350,176 @@ TEST_CASE("ActivationSoftmax computes correct probabilities per row")
     }
 }
 
+TEST_CASE("ActivationSoftmax throws when exponentials sum is non-finite")
+{
+    MatD inputs(1, 1);
+    inputs(0, 0) = -std::numeric_limits<double>::infinity();
+    ActivationSoftmax activation;
+    CHECK_THROWS_AS(activation.forward(inputs), runtime_error);
+}
+
+// LossCategoricalCrossEntropy tests
+TEST_CASE("LossCategoricalCrossEntropy matches known example with sparse labels")
+{
+    MatD preds(3, 3);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.1; preds(0, 2) = 0.2;
+    preds(1, 0) = 0.1; preds(1, 1) = 0.5; preds(1, 2) = 0.4;
+    preds(2, 0) = 0.02; preds(2, 1) = 0.9; preds(2, 2) = 0.08;
+
+    // sparse
+    VecI targets = {0, 1, 1};
+
+    LossCategoricalCrossEntropy loss;
+    double mean_loss = loss.calculate(preds, targets);
+
+    CHECK(mean_loss == doctest::Approx(0.38506088005216804));
+}
+
+TEST_CASE("LossCategoricalCrossEntropy matches known example with one-hot labels")
+{
+    MatD preds(3, 3);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.1; preds(0, 2) = 0.2;
+    preds(1, 0) = 0.1; preds(1, 1) = 0.5; preds(1, 2) = 0.4;
+    preds(2, 0) = 0.02; preds(2, 1) = 0.9; preds(2, 2) = 0.08;
+
+    // one-hot
+    MatD targets(3, 3, 0.0);
+    targets(0, 0) = 1.0;
+    targets(1, 1) = 1.0;
+    targets(2, 1) = 1.0;
+
+    LossCategoricalCrossEntropy loss;
+    double mean_loss = loss.calculate(preds, targets);
+
+    CHECK(mean_loss == doctest::Approx(0.38506088005216804));
+}
+
+TEST_CASE("LossCategoricalCrossEntropy clips to avoid log(0)")
+{
+    MatD preds(1, 3);
+    preds(0, 0) = 1.0;
+    preds(0, 1) = 0.0;
+    preds(0, 2) = 0.0;
+
+    VecI targets = {0};
+
+    LossCategoricalCrossEntropy loss;
+    double mean_loss = loss.calculate(preds, targets);
+
+    CHECK(mean_loss == doctest::Approx(1.0e-7).epsilon(1e-3));
+}
+
+TEST_CASE("LossCategoricalCrossEntropy clips zero confidence for true class")
+{
+    MatD preds(1, 3);
+    preds(0, 0) = 0.0;
+    preds(0, 1) = 0.5;
+    preds(0, 2) = 0.5;
+
+    VecI targets = {0};
+
+    LossCategoricalCrossEntropy loss;
+    double mean_loss = loss.calculate(preds, targets);
+
+    // Expect clipped to -log(1e-7)
+    CHECK(mean_loss == doctest::Approx(16.11809565095832).epsilon(1e-6));
+}
+
+TEST_CASE("LossCategoricalCrossEntropy throws on sparse label count mismatch")
+{
+    MatD preds(2, 3);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.1; preds(0, 2) = 0.2;
+    preds(1, 0) = 0.1; preds(1, 1) = 0.5; preds(1, 2) = 0.4;
+
+    VecI targets = {0}; // size mismatch vs preds.rows
+
+    LossCategoricalCrossEntropy loss;
+    CHECK_THROWS_AS(loss.calculate(preds, targets), runtime_error);
+}
+
+TEST_CASE("LossCategoricalCrossEntropy throws on sparse label out of range")
+{
+    MatD preds(1, 2);
+    preds(0, 0) = 0.5; preds(0, 1) = 0.5;
+    VecI targets = {2}; // invalid index
+
+    LossCategoricalCrossEntropy loss;
+    CHECK_THROWS_AS(loss.calculate(preds, targets), runtime_error);
+}
+
+TEST_CASE("LossCategoricalCrossEntropy throws on one-hot shape mismatch")
+{
+    MatD preds(2, 2);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.3;
+    preds(1, 0) = 0.1; preds(1, 1) = 0.9;
+
+    MatD targets(1, 2, 0.0); // mismatched rows
+
+    LossCategoricalCrossEntropy loss;
+    CHECK_THROWS_AS(loss.calculate(preds, targets), runtime_error);
+}
+
+// classification_accuracy tests
+TEST_CASE("classification_accuracy computes correct value for sparse labels")
+{
+    MatD preds(3, 3);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.1; preds(0, 2) = 0.2;
+    preds(1, 0) = 0.1; preds(1, 1) = 0.5; preds(1, 2) = 0.4;
+    preds(2, 0) = 0.2; preds(2, 1) = 0.3; preds(2, 2) = 0.5;
+
+    VecI targets = {0, 1, 2};
+
+    double acc = classification_accuracy(preds, targets);
+    CHECK(acc == doctest::Approx(1.0));
+}
+
+TEST_CASE("classification_accuracy throws on sparse size mismatch")
+{
+    MatD preds(2, 3);
+    preds(0, 0) = 0.7; preds(0, 1) = 0.2; preds(0, 2) = 0.1;
+    preds(1, 0) = 0.2; preds(1, 1) = 0.3; preds(1, 2) = 0.5;
+
+    VecI targets = {0}; // mismatch
+
+    CHECK_THROWS_AS(classification_accuracy(preds, targets), runtime_error);
+}
+
+TEST_CASE("classification_accuracy throws on sparse empty predictions")
+{
+    MatD preds(1, 0);
+    VecI targets = {0};
+    CHECK_THROWS_AS(classification_accuracy(preds, targets), runtime_error);
+}
+
+TEST_CASE("classification_accuracy computes correct value for one-hot labels")
+{
+    MatD preds(2, 3);
+    preds(0, 0) = 0.6; preds(0, 1) = 0.3; preds(0, 2) = 0.1;
+    preds(1, 0) = 0.2; preds(1, 1) = 0.5; preds(1, 2) = 0.3;
+
+    MatD targets(2, 3, 0.0);
+    targets(0, 0) = 1.0;
+    targets(1, 1) = 1.0;
+
+    double acc = classification_accuracy(preds, targets);
+    CHECK(acc == doctest::Approx(1.0));
+}
+
+TEST_CASE("classification_accuracy throws on one-hot shape mismatch")
+{
+    MatD preds(1, 2);
+    preds(0, 0) = 0.5; preds(0, 1) = 0.5;
+
+    MatD targets(2, 2, 0.0); // mismatched rows
+    targets(0, 0) = 1.0;
+    targets(1, 1) = 1.0;
+
+    CHECK_THROWS_AS(classification_accuracy(preds, targets), runtime_error);
+}
+
+TEST_CASE("classification_accuracy throws on one-hot empty predictions")
+{
+    MatD preds(0, 0);
+    MatD targets(0, 0);
+    CHECK_THROWS_AS(classification_accuracy(preds, targets), runtime_error);
+}
