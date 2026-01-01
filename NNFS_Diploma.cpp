@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <string>
 #include <fstream>
+#include <type_traits>
 
 using std::cout;
+using std::ofstream;
 using std::runtime_error;
 using std::size_t;
 using std::string;
@@ -27,6 +29,7 @@ using std::cos;
 using std::exp;
 using std::log;
 using std::isfinite;
+using std::is_same_v;
 
 using VecD = std::vector<double>;
 using VecI = std::vector<int>;
@@ -67,6 +70,30 @@ public:
 };
 
 using MatD = Matrix;
+
+void print_vector(const VecD& v)
+{
+    for (size_t i = 0; i < v.size(); ++i) {
+        cout << v[i];
+        if (i + 1 != v.size()) {
+            cout << ' ';
+        }
+    }
+    cout << '\n';
+}
+
+void print_matrix(const MatD& m)
+{
+    for (size_t i = 0; i < m.rows; ++i) {
+        for (size_t j = 0; j < m.cols; ++j) {
+            cout << m(i, j);
+            if (j + 1 != m.cols) {
+                cout << ' ';
+            }
+        }
+        cout << '\n';
+    }
+}
 
 // TODO: Make rng implementation thread-safe
 
@@ -153,6 +180,20 @@ MatD clip_matrix(const MatD& m, double min_value, double max_value)
     return result;
 }
 
+inline void scale_by_samples(MatD& m, size_t samples)
+{
+    if (samples == 0) {
+        throw runtime_error("scale_by_samples: samples must be bigger than 0");
+    }
+
+    const double inv = 1.0 / static_cast<double>(samples);
+    for (size_t i = 0; i < m.rows; ++i) {
+        for (size_t j = 0; j < m.cols; ++j) {
+            m(i, j) *= inv;
+        }
+    }
+}
+
 double mean(const VecD& values)
 {
     if (values.empty()) {
@@ -165,6 +206,68 @@ double mean(const VecD& values)
     }
 
     return sum / static_cast<double>(values.size());
+}
+
+// accuracy for sparse and one-hot labels
+template <typename YTrue>
+double classification_accuracy(const MatD& y_pred, const YTrue& y_true)
+{
+    static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
+                  "classification_accuracy: y_true must be VecI (sparse) or MatD (one-hot)");
+
+    if (y_pred.rows == 0 || y_pred.cols == 0) {
+        throw runtime_error("classification_accuracy: y_pred must be non-empty");
+    }
+
+    if constexpr (is_same_v<YTrue, VecI>) {
+        if (y_pred.rows != y_true.size()) {
+            throw runtime_error("classification_accuracy: y_pred.rows must match y_true.size()");
+        }
+    } else {
+        if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
+            throw runtime_error("classification_accuracy: y_pred and y_true must have the same shape");
+        }
+    }
+
+    size_t correct = 0;
+    const size_t samples = y_pred.rows;
+    const size_t classes = y_pred.cols;
+
+    for (size_t i = 0; i < samples; ++i) {
+        size_t pred_class = 0;
+        double max_pred = y_pred(i, 0);
+        for (size_t j = 1; j < classes; ++j) {
+            const double v = y_pred(i, j);
+            if (v > max_pred) {
+                max_pred = v;
+                pred_class = j;
+            }
+        }
+
+        // true_class depends on label format
+        size_t true_class = 0;
+        if constexpr (is_same_v<YTrue, VecI>) {
+            const int y_true_size_t_check = y_true[i];
+            if (y_true_size_t_check < 0 || static_cast<size_t>(y_true_size_t_check) >= classes) {
+                throw runtime_error("classification_accuracy: class index out of range");
+            }
+            true_class = static_cast<size_t>(y_true_size_t_check);
+        } else {
+            double max_true = y_true(i, 0);
+            for (size_t j = 1; j < classes; ++j) {
+                const double v = y_true(i, j);
+                if (v > max_true) {
+                    max_true = v;
+                    true_class = j;
+                    if (max_true == 1.0) break;
+                }
+            }
+        }
+
+        if (pred_class == true_class) ++correct;
+    }
+
+    return static_cast<double>(correct) / static_cast<double>(samples);
 }
 
 // training data
@@ -277,7 +380,7 @@ void plot_scatter_svg(const string& path, const MatD& points, const VecI& labels
         return margin_top + (1.0 - clamp01(normalized_y)) * plot_height;
     };
 
-    std::ofstream out(path);
+    ofstream out(path);
     if (!out) {
         throw runtime_error("plot_scatter_svg: given path is invalid");
     };
@@ -310,7 +413,7 @@ void plot_scatter_svg(const string& path, const MatD& points, const VecI& labels
         const double tick_pos_x = margin_left + (plot_width * (double)i / ticks);
         const double tick_pos_y = margin_top + plot_height - (plot_height * (double)i / ticks);
 
-        out << std::fixed << std::setprecision(3);
+        out << fixed << setprecision(3);
         out << "<text x=\"" << tick_pos_x << "\" y=\"" << (margin_top + plot_height + 22)
             << "\" text-anchor=\"middle\">" << tick_value_x << "</text>\n";
         out << "<text x=\"" << (margin_left - 10) << "\" y=\"" << (tick_pos_y + 4)
@@ -322,7 +425,7 @@ void plot_scatter_svg(const string& path, const MatD& points, const VecI& labels
     const double r = 2.4;
     const bool has_labels = (labels.size() == num_points);
 
-    for (std::size_t point_index = 0; point_index < num_points; ++point_index) {
+    for (size_t point_index = 0; point_index < num_points; ++point_index) {
         const double point_x = points(point_index, 0);
         const double point_y = points(point_index, 1);
         const int class_id = has_labels ? labels[point_index] : 0;
@@ -336,25 +439,6 @@ void plot_scatter_svg(const string& path, const MatD& points, const VecI& labels
     out << "</svg>\n";
 }
 
-// neurons
-MatD layer_forward_batch(const MatD& inputs, const MatD& weights, const VecD& biases)
-{
-    if (weights.rows != biases.size()) {
-        throw runtime_error("layer_forward_batch: weights.rows must match biases.size()");
-    }
-
-    MatD weights_T = transpose(weights);
-    MatD outputs = matmul(inputs, weights_T);
-
-    for (size_t i = 0; i < outputs.rows; ++i) {
-        for (size_t j = 0; j < outputs.cols; ++j) {
-            outputs(i, j) += biases[j];
-        }
-    }
-
-    return outputs;
-}
-
 // Dense layer with weights/biases and cached inputs/output
 class LayerDense
 {
@@ -363,16 +447,19 @@ public:
     VecD biases;
     MatD output;
     MatD inputs;
+    MatD dweights;
+    VecD dbiases;
+    MatD dinputs;
 
     LayerDense(size_t n_inputs, size_t n_neurons)
-        : weights(n_neurons, n_inputs),
+        : weights(n_inputs, n_neurons),
           biases(n_neurons, 0.0),
           output(),
           inputs()
     {
-        for (size_t neuron = 0; neuron < n_neurons; ++neuron) {
-            for (size_t input = 0; input < n_inputs; ++input) {
-                weights(neuron, input) = 0.01 * random_gaussian();
+        for (size_t input = 0; input < n_inputs; ++input) {
+            for (size_t neuron = 0; neuron < n_neurons; ++neuron) {
+                weights(input, neuron) = 0.01 * random_gaussian();
             }
         }
     }
@@ -380,7 +467,42 @@ public:
     void forward(const MatD& inputs_batch)
     {
         inputs = inputs_batch;
-        output = layer_forward_batch(inputs, weights, biases);
+        if (weights.is_empty()) {
+            throw runtime_error("LayerDense::forward: weights must be initialized");
+        }
+        if (inputs.cols != weights.rows) {
+            throw runtime_error("LayerDense::forward: inputs.cols must match weights.rows");
+        }
+        if (biases.size() != weights.cols) {
+            throw runtime_error("LayerDense::forward: biases.size() must match weights.cols");
+        }
+
+        output = matmul(inputs, weights);
+        for (size_t i = 0; i < output.rows; ++i) {
+            for (size_t j = 0; j < output.cols; ++j) {
+                output(i, j) += biases[j];
+            }
+        }
+    }
+
+    void backward(const MatD& dvalues)
+    {
+        if (dvalues.rows != inputs.rows || dvalues.cols != weights.cols) {
+            throw runtime_error("LayerDense::backward: dvalues shape mismatch");
+        }
+
+        MatD inputs_T = transpose(inputs);
+        dweights = matmul(inputs_T, dvalues);
+
+        dbiases.assign(weights.cols, 0.0);
+        for (size_t i = 0; i < dvalues.rows; ++i) {
+            for (size_t j = 0; j < dvalues.cols; ++j) {
+                dbiases[j] += dvalues(i, j);
+            }
+        }
+
+        MatD weights_T = transpose(weights);
+        dinputs = matmul(dvalues, weights_T);
     }
 };
 
@@ -391,6 +513,7 @@ class ActivationReLU
 public:
     MatD inputs;
     MatD output;
+    MatD dinputs;
 
     void forward(const MatD& inputs_batch)
     {
@@ -407,6 +530,22 @@ public:
             }
         }
     }
+
+    void backward(const MatD& dvalues)
+    {
+        if (dvalues.rows != inputs.rows || dvalues.cols != inputs.cols) {
+            throw runtime_error("ActivationReLU::backward: dvalues shape mismatch");
+        }
+
+        dinputs = dvalues;
+        for (size_t i = 0; i < inputs.rows; ++i) {
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                if (inputs(i, j) <= 0.0) {
+                    dinputs(i, j) = 0.0;
+                }
+            }
+        }
+    }
 };
 
 // Softmax activation (forward only)
@@ -415,6 +554,7 @@ class ActivationSoftmax
 public:
     MatD inputs;
     MatD output;
+    MatD dinputs;
 
     void forward(const MatD& inputs_batch)
     {
@@ -446,6 +586,28 @@ public:
             }
         }
     }
+
+    void backward(const MatD& dvalues)
+    {
+        if (dvalues.rows != output.rows || dvalues.cols != output.cols) {
+            throw runtime_error("ActivationSoftmax::backward: dvalues shape mismatch");
+        }
+
+        dinputs.assign(dvalues.rows, dvalues.cols);
+
+        const size_t samples = dvalues.rows;
+        const size_t classes = dvalues.cols;
+
+        for (size_t i = 0; i < samples; ++i) { // O(C) per sample
+            double alpha = 0.0;
+            for (size_t k = 0; k < classes; ++k) {
+                alpha += output(i, k) * dvalues(i, k);
+            }
+            for (size_t j = 0; j < classes; ++j) {
+                dinputs(i, j) = output(i, j) * (dvalues(i, j) - alpha);
+            }
+        }
+    }
 };
 
 // loss
@@ -454,19 +616,17 @@ class Loss
 public:
     virtual ~Loss() = default;
 
-    double calculate(const MatD& output, const VecI& y_true) const
+    template <typename YTrue>
+    double calculate(const MatD& output, const YTrue& y_true) const
     {
+        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
+            "Loss::calculate: y_true must be VecI (sparse) or MatD (one-hot)");
+
         VecD sample_losses = forward(output, y_true);
         return mean(sample_losses);
     }
 
-    double calculate(const MatD& output, const MatD& y_true) const
-    {
-        VecD sample_losses = forward(output, y_true);
-        return mean(sample_losses);
-    }
-
-protected: 
+protected:
     virtual VecD forward(const MatD& output, const VecI& y_true) const = 0;
     virtual VecD forward(const MatD& output, const MatD& y_true) const = 0;
 };
@@ -474,6 +634,8 @@ protected:
 class LossCategoricalCrossEntropy : public Loss
 {
 public:
+    MatD dinputs;
+
     // sparse labels
     VecD forward(const MatD& y_pred, const VecI& y_true) const override
     {
@@ -497,7 +659,7 @@ public:
         return losses;
     }
 
-    // one-hot labels path
+    // one-hot labels
     VecD forward(const MatD& y_pred, const MatD& y_true) const override
     {
         if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
@@ -518,151 +680,196 @@ public:
 
         return losses;
     }
+
+    // sparse labels
+    void backward(const MatD& dvalues, const VecI& y_true)
+    {
+        if (dvalues.rows != y_true.size()) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels  = dvalues.cols;
+
+        if (samples == 0) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
+        }
+
+        dinputs.assign(samples, labels, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            const int class_idx = y_true[i];
+            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
+                throw runtime_error("LossCategoricalCrossEntropy::backward: class index out of range");
+            }
+
+            const size_t c = static_cast<size_t>(class_idx);
+            double p = dvalues(i, c);
+
+            p = clamp_prob(p);
+
+            dinputs(i, c) = -1.0 / p;
+        }
+
+        scale_by_samples(dinputs, samples);
+    }
+
+    // one-hot labels
+    void backward(const MatD& dvalues, const MatD& y_true)
+    {
+        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels  = dvalues.cols;
+
+        if (samples == 0) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
+        }
+
+        dinputs.assign(samples, labels, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            for (size_t j = 0; j < labels; ++j) {
+                double p = dvalues(i, j);
+
+                p = clamp_prob(p);
+
+                dinputs(i, j) = -y_true(i, j) / p;
+            }
+        }
+
+        scale_by_samples(dinputs, samples);
+    }
+
+private:
+    static double clamp_prob(double p)
+    {
+        constexpr double eps = 1e-7;
+        if (p < eps) return eps;
+        if (p > 1.0 - eps) return 1.0 - eps;
+        return p;
+    }
 };
 
-// accuracy
-// for sparse integer labels
-double classification_accuracy(const MatD& y_pred, const VecI& y_true)
+// Softmax classifier - combined Softmax activation and cross-entropy loss
+class ActivationSoftmaxLossCategoricalCrossEntropy
 {
-    if (y_pred.rows != y_true.size()) {
-        throw runtime_error("classification_accuracy: y_pred.rows must match y_true.size()");
-    }
-    if (y_pred.rows == 0 || y_pred.cols == 0) {
-        throw runtime_error("classification_accuracy: y_pred must be non-empty");
+public:
+    ActivationSoftmax activation;
+    LossCategoricalCrossEntropy loss;
+    MatD output;
+    MatD dinputs;
+
+    template <typename YTrue>
+    double forward(const MatD& inputs, const YTrue& y_true)
+    {
+        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
+            "y_true must be VecI (sparse) or MatD (one-hot)");
+
+        activation.forward(inputs);
+        output = activation.output;
+        return loss.calculate(output, y_true);
     }
 
-    size_t correct = 0;
-    for (size_t i = 0; i < y_pred.rows; ++i) {
-        size_t pred_class = 0;
-        double max_pred = y_pred(i, 0);
-        for (size_t j = 1; j < y_pred.cols; ++j) {
-            double v = y_pred(i, j);
-            if (v > max_pred) {
-                max_pred = v;
-                pred_class = j;
+    // sparse labels
+    void backward(const MatD& dvalues, const VecI& y_true)
+    {
+        if (dvalues.rows != y_true.size()) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels = dvalues.cols;
+
+        dinputs = dvalues;
+        for (size_t i = 0; i < samples; ++i) {
+            int class_idx = y_true[i];
+            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
+                throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: class index out of range");
             }
+            dinputs(i, static_cast<size_t>(class_idx)) -= 1.0;
         }
 
-        if (pred_class == static_cast<size_t>(y_true[i])) {
-            ++correct;
-        }
+        scale_by_samples(dinputs, samples);
     }
 
-    return static_cast<double>(correct) / static_cast<double>(y_pred.rows);
-}
-
-// for one-hot labels (argmax on both)
-double classification_accuracy(const MatD& y_pred, const MatD& y_true)
-{
-    if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
-        throw runtime_error("classification_accuracy: y_pred and y_true must have the same shape");
-    }
-    if (y_pred.rows == 0 || y_pred.cols == 0) {
-        throw runtime_error("classification_accuracy: y_pred must be non-empty");
-    }
-
-    size_t correct = 0;
-    for (size_t i = 0; i < y_pred.rows; ++i) {
-        size_t pred_class = 0;
-        double max_pred = y_pred(i, 0);
-        for (size_t j = 1; j < y_pred.cols; ++j) {
-            double v = y_pred(i, j);
-            if (v > max_pred) {
-                max_pred = v;
-                pred_class = j;
-            }
+    // one-hot labels (turns them into sparse and then calls the other backward method)
+    void backward(const MatD& dvalues, const MatD& y_true)
+    {
+        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
         }
 
-        size_t true_class = 0;
-        double max_true = y_true(i, 0);
-        for (size_t j = 1; j < y_true.cols; ++j) {
-            double v = y_true(i, j);
-            if (v > max_true) {
-                max_true = v;
-                true_class = j;
-                if (max_true == 1.0) {
-                    break;
+        VecI y_true_sparse(y_true.rows, 0);
+        for (size_t i = 0; i < y_true.rows; ++i) {
+            size_t class_idx = 0;
+            double max_val = y_true(i, 0);
+            for (size_t j = 1; j < y_true.cols; ++j) {
+                double v = y_true(i, j);
+                if (v > max_val) {
+                    max_val = v;
+                    class_idx = j;
+                    if (max_val == 1.0) break;
                 }
             }
+            y_true_sparse[i] = static_cast<int>(class_idx);
         }
 
-        if (pred_class == true_class) {
-            ++correct;
-        }
+        backward(dvalues, y_true_sparse);
     }
-
-    return static_cast<double>(correct) / static_cast<double>(y_pred.rows);
-}
+};
 
 #ifndef NNFS_NO_MAIN
 int main()
 {
     MatD X;
     VecI y;
-    generate_vertical_data(100, 3, X, y);
-    plot_scatter_svg("plot.svg", X, y);
+    generate_spiral_data(100, 3, X, y);
 
     LayerDense dense1(2, 3);
     ActivationReLU activation1;
     LayerDense dense2(3, 3);
-    ActivationSoftmax activation2;
-    LossCategoricalCrossEntropy loss_function;
+    ActivationSoftmaxLossCategoricalCrossEntropy loss_activation;
 
-    double lowest_loss = numeric_limits<double>::infinity();
-    MatD best_dense1_weights = dense1.weights;
-    VecD best_dense1_biases = dense1.biases;
-    MatD best_dense2_weights = dense2.weights;
-    VecD best_dense2_biases = dense2.biases;
+    dense1.forward(X);
+    activation1.forward(dense1.output);
+    dense2.forward(activation1.output);
+    double loss = loss_activation.forward(dense2.output, y);
 
-    const double step_size = 0.05;
-    const int iterations = 10000;
+    cout << fixed << setprecision(6);
 
-    for (int iteration = 0; iteration < iterations; ++iteration) {
-        for (size_t i = 0; i < dense1.weights.rows; ++i) {
-            for (size_t j = 0; j < dense1.weights.cols; ++j) {
-                dense1.weights(i, j) += step_size * random_gaussian();
+    const size_t samples_to_show = min<size_t>(5, loss_activation.output.rows);
+    cout << "First " << samples_to_show << " outputs:\n";
+    for (size_t i = 0; i < samples_to_show; ++i) {
+        for (size_t j = 0; j < loss_activation.output.cols; ++j) {
+            cout << loss_activation.output(i, j);
+            if (j + 1 != loss_activation.output.cols) {
+                cout << ' ';
             }
         }
-
-        for (double& bias : dense1.biases) {
-            bias += step_size * random_gaussian();
-        }
-
-        for (size_t i = 0; i < dense2.weights.rows; ++i) {
-            for (size_t j = 0; j < dense2.weights.cols; ++j) {
-                dense2.weights(i, j) += step_size * random_gaussian();
-            }
-        }
-
-        for (double& bias : dense2.biases) {
-            bias += step_size * random_gaussian();
-        }
-
-        dense1.forward(X);
-        activation1.forward(dense1.output);
-        dense2.forward(activation1.output);
-        activation2.forward(dense2.output);
-
-        double loss = loss_function.calculate(activation2.output, y);
-        double acc = classification_accuracy(activation2.output, y);
-
-        if (loss < lowest_loss) {
-            cout << "New set of weights in iteration " << iteration
-                 << ", loss: " << loss
-                 << ", acc: " << acc << '\n';
-
-            lowest_loss = loss;
-            best_dense1_weights = dense1.weights;
-            best_dense1_biases = dense1.biases;
-            best_dense2_weights = dense2.weights;
-            best_dense2_biases = dense2.biases;
-        } else {
-            dense1.weights = best_dense1_weights;
-            dense1.biases = best_dense1_biases;
-            dense2.weights = best_dense2_weights;
-            dense2.biases = best_dense2_biases;
-        }
+        cout << '\n';
     }
+
+    cout << "loss: " << loss << '\n';
+
+    double acc = classification_accuracy(loss_activation.output, y);
+    cout << "acc: " << acc << '\n';
+
+    loss_activation.backward(loss_activation.output, y);
+    dense2.backward(loss_activation.dinputs);
+    activation1.backward(dense2.dinputs);
+    dense1.backward(activation1.dinputs);
+
+    cout << "dense1.dweights:\n";
+    print_matrix(dense1.dweights);
+    cout << "dense1.dbiases:\n";
+    print_vector(dense1.dbiases);
+    cout << "dense2.dweights:\n";
+    print_matrix(dense2.dweights);
+    cout << "dense2.dbiases:\n";
+    print_vector(dense2.dbiases);
 
     return 0;
 }
