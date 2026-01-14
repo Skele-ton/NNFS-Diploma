@@ -26,6 +26,7 @@ using std::min;
 using std::max;
 using std::sqrt;
 using std::pow;
+using std::abs;
 using std::sin;
 using std::cos;
 using std::exp;
@@ -432,6 +433,10 @@ class LayerDense
 public:
     MatD weights;
     VecD biases;
+    double weight_regularizer_l1;
+    double weight_regularizer_l2;
+    double bias_regularizer_l1;
+    double bias_regularizer_l2;
     MatD weight_momentums;
     VecD bias_momentums;
     MatD weight_cache;
@@ -442,9 +447,17 @@ public:
     VecD dbiases;
     MatD dinputs;
 
-    LayerDense(size_t n_inputs, size_t n_neurons)
+    LayerDense(size_t n_inputs, size_t n_neurons,
+               double weight_regularizer_l1 = 0.0,
+               double weight_regularizer_l2 = 0.0,
+               double bias_regularizer_l1 = 0.0,
+               double bias_regularizer_l2 = 0.0)
         : weights(n_inputs, n_neurons),
           biases(n_neurons, 0.0),
+          weight_regularizer_l1(weight_regularizer_l1),
+          weight_regularizer_l2(weight_regularizer_l2),
+          bias_regularizer_l1(bias_regularizer_l1),
+          bias_regularizer_l2(bias_regularizer_l2),
           output(),
           inputs()
     {
@@ -489,6 +502,37 @@ public:
         for (size_t i = 0; i < dvalues.rows; ++i) {
             for (size_t j = 0; j < dvalues.cols; ++j) {
                 dbiases[j] += dvalues(i, j);
+            }
+        }
+
+        // l1 and l2 regularization
+        const double weight_l1 = (weight_regularizer_l1 > 0.0) ? weight_regularizer_l1 : 0.0;
+        const double weight_l2 = (weight_regularizer_l2 > 0.0) ? (2.0 * weight_regularizer_l2) : 0.0;
+
+        if (weight_l1 != 0.0 || weight_l2 != 0.0) {
+            for (size_t i = 0; i < weights.rows; ++i) {
+                for (size_t j = 0; j < weights.cols; ++j) {
+                    if (weight_l1 != 0) {
+                        const double sign = (weights(i, j) >= 0.0) ? 1.0 : -1.0;
+                        dweights(i, j) += weight_l1 * sign + weight_l2 * weights(i, j);
+                    } else {
+                        dweights(i, j) += weight_l2 * weights(i, j);
+                    }
+                }
+            }
+        }
+
+        const double bias_l1 = (bias_regularizer_l1 > 0.0) ? bias_regularizer_l1 : 0.0;
+        const double bias_l2 = (bias_regularizer_l2 > 0.0) ? (2.0 * bias_regularizer_l2) : 0.0;
+
+        if (bias_l1 != 0.0 || bias_l2 != 0.0) {
+            for (size_t j = 0; j < biases.size(); ++j) {
+                if (bias_l1 != 0) {
+                    const double sign = (biases[j] >= 0.0) ? 1.0 : -1.0;
+                    dbiases[j] += bias_l1 * sign + bias_l2 * biases[j];
+                } else {
+                    dbiases[j] += bias_l2 * biases[j];
+                }
             }
         }
 
@@ -841,6 +885,41 @@ public:
         return mean_sample_losses(sample_losses);
     }
 
+    static double regularization_loss(const LayerDense& layer)
+    {
+        double regularization = 0.0;
+
+        const double weight_l1 = (layer.weight_regularizer_l1 > 0.0) ? layer.weight_regularizer_l1 : 0.0;
+        const double weight_l2 = (layer.weight_regularizer_l2 > 0.0) ? layer.weight_regularizer_l2 : 0.0;
+
+        if (weight_l1 != 0.0 || weight_l2 != 0.0) {
+            double sum_abs = 0.0;
+            double sum_sq  = 0.0;
+
+            for (double weight : layer.weights.data) {
+                if (weight_l1 != 0.0) sum_abs += abs(weight);
+                if (weight_l2 != 0.0)  sum_sq  += weight * weight;
+            }
+            regularization += weight_l1 * sum_abs + weight_l2 * sum_sq;
+        }
+
+        const double bias_l1 = (layer.bias_regularizer_l1 > 0.0) ? layer.bias_regularizer_l1 : 0.0;
+        const double bias_l2 = (layer.bias_regularizer_l2 > 0.0) ? layer.bias_regularizer_l2 : 0.0;
+
+        if (bias_l1 != 0.0 || bias_l2 != 0.0) {
+            double sum_abs = 0.0;
+            double sum_sq  = 0.0;
+
+            for (double bias : layer.biases) {
+                if (bias_l1 != 0.0) sum_abs += abs(bias);
+                if (bias_l2 != 0.0) sum_sq  += bias * bias;
+            }
+            regularization += bias_l1 * sum_abs + bias_l2 * sum_sq;
+        }
+
+        return regularization;
+    }
+
 protected:
     static double mean_sample_losses(const VecD& sample_losses)
     {
@@ -1059,11 +1138,11 @@ int main()
     plot_scatter_svg("plot.svg", X, y);
     cout << "Saved scatter plot to plot.svg\n";
 
-    LayerDense dense1(2, 64);
+    LayerDense dense1(2, 64, 0.0, 5e-4, 0.0, 5e-4);
     ActivationReLU activation1;
     LayerDense dense2(64, 3);
     ActivationSoftmaxLossCategoricalCrossEntropy loss_activation;
-    OptimizerAdam optimizer(0.05, 5e-7);
+    OptimizerAdam optimizer(0.02, 5e-7);
 
     cout << fixed << setprecision(3);
 
@@ -1072,14 +1151,16 @@ int main()
         activation1.forward(dense1.output);
         dense2.forward(activation1.output);
 
-        double loss = loss_activation.forward(dense2.output, y);
+        double data_loss = loss_activation.forward(dense2.output, y);
+        double reg_loss = Loss::regularization_loss(dense1) + Loss::regularization_loss(dense2);
+        double loss = data_loss + reg_loss;
         double accuracy = classification_accuracy(loss_activation.output, y);
 
         if (epoch % 100 == 0) {
             cout << "epoch: " << epoch
                  << ", acc: " << accuracy
-                 << ", loss: " << loss
-                 << ", learning_rate: " << setprecision(10) << optimizer.current_learning_rate
+                 << ", loss: " << loss << " (data_loss: " << data_loss << ", reg_loss: " << reg_loss << ")"
+                 << ", lr: " << setprecision(15) << optimizer.current_learning_rate
                  << setprecision(3)
                  << '\n';
         }
@@ -1094,6 +1175,20 @@ int main()
         optimizer.update_params(dense2);
         optimizer.post_update_params();
     }
+
+    MatD X_test;
+    VecI y_test;
+    generate_spiral_data(100, 3, X_test, y_test);
+
+    dense1.forward(X_test);
+    activation1.forward(dense1.output);
+    dense2.forward(activation1.output);
+    double test_loss = loss_activation.forward(dense2.output, y_test);
+    double test_accuracy = classification_accuracy(loss_activation.output, y_test);
+
+    cout << "validation, acc: " << test_accuracy
+         << ", loss: " << test_loss
+         << '\n';
 
     return 0;
 }

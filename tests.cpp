@@ -571,6 +571,40 @@ TEST_CASE("LayerDense backward computes gradients")
     CHECK(layer.dinputs(1, 1) == doctest::Approx(4.0));
 }
 
+TEST_CASE("LayerDense backward computes regularization gradients")
+{
+    LayerDense layer(2, 2, 0.3, 0.7, 0.5, 0.9);
+    layer.weights(0, 0) = -1.0; layer.weights(0, 1) = 2.0;
+    layer.weights(1, 0) = -3.0; layer.weights(1, 1) = 4.0;
+    layer.biases[0] = -5.0; layer.biases[1] = 6.0;
+
+    MatD inputs(1, 2);
+    inputs(0, 0) = 1.0; inputs(0, 1) = 1.0;
+    layer.forward(inputs);
+
+    MatD dvalues(1, 2);
+    dvalues(0, 0) = 0.1; dvalues(0, 1) = -0.2;
+
+    layer.backward(dvalues);
+
+    // Exercise weight-only L2 path
+    CHECK(layer.dweights(0, 0) == doctest::Approx(0.1 + 0.3 * -1.0 + 2 * 0.7 * -1.0));
+    CHECK(layer.dweights(0, 1) == doctest::Approx(-0.2 + 0.3 * 1.0 + 2 * 0.7 * 2.0));
+    CHECK(layer.dweights(1, 0) == doctest::Approx(0.1 + 0.3 * -1.0 + 2 * 0.7 * -3.0));
+    CHECK(layer.dweights(1, 1) == doctest::Approx(-0.2 + 0.3 * 1.0 + 2 * 0.7 * 4.0));
+
+    // Exercise bias-only L2 path
+    CHECK(layer.dbiases[0] == doctest::Approx(0.1 + 0.5 * -1.0 + 2 * 0.9 * -5.0));
+    CHECK(layer.dbiases[1] == doctest::Approx(-0.2 + 0.5 * 1.0 + 2 * 0.9 * 6.0));
+
+    // Toggle off L1 to hit else branches
+    layer.bias_regularizer_l1 = 0.0;
+    layer.weight_regularizer_l1 = 0.0;
+    layer.backward(dvalues);
+    CHECK(layer.dweights(0, 0) == doctest::Approx(0.1 + 2 * 0.7 * -1.0));
+    CHECK(layer.dbiases[0] == doctest::Approx(0.1 + 2 * 0.9 * -5.0));
+}
+
 TEST_CASE("LayerDense backward throws on shape mismatch")
 {
     MatD inputs(1, 2);
@@ -737,6 +771,33 @@ TEST_CASE("ActivationSoftmax backward throws on shape mismatch")
     CHECK_THROWS_WITH_AS(activation.backward(bad_dvalues),
                          "ActivationSoftmax::backward: dvalues shape mismatch",
                          runtime_error);
+}
+
+// general Loss class tests
+TEST_CASE("Loss regularization_loss sums L1 and L2 for weights and biases")
+{
+    LayerDense layer(2, 2, 0.3, 0.7, 0.5, 0.9);
+    layer.weights(0, 0) = 1.0;  layer.weights(0, 1) = -2.0;
+    layer.weights(1, 0) = -3.0; layer.weights(1, 1) = 4.0;
+    layer.biases[0] = 3.0; layer.biases[1] = -4.0;
+
+    const double reg = Loss::regularization_loss(layer);
+    // L1 weights: (1+2+3+4) * 0.3 = 3.0
+    // L2 weights: (1^2+2^2+3^2+4^2) * 0.7 = 30 * 0.7 = 21.0
+    // L1 biases: (3+4) * 0.5 = 3.5
+    // L2 biases: (3^2+4^2) * 0.9 = (9+16) * 0.9 = 22.5
+    // Total: 50.0
+    CHECK(reg == doctest::Approx(50.0));
+}
+
+TEST_CASE("Loss regularization_loss is zero when regularizers are zero")
+{
+    LayerDense layer(2, 2);
+    layer.weights(0, 0) = 1.0; layer.weights(0, 1) = 2.0;
+    layer.weights(1, 0) = 3.0; layer.weights(1, 1) = 4.0;
+    layer.biases[0] = 5.0; layer.biases[1] = 6.0;
+
+    CHECK(Loss::regularization_loss(layer) == doctest::Approx(0.0));
 }
 
 // LossCategoricalCrossEntropy tests
