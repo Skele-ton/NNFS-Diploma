@@ -541,6 +541,57 @@ public:
     }
 };
 
+// Dropout layer
+class LayerDropout
+{
+public:
+    double keep_rate;
+    MatD inputs;
+    MatD scaled_binary_mask;
+    MatD output;
+    MatD dinputs;
+
+    explicit LayerDropout(double rate)
+        : keep_rate(1.0 - rate)
+    {
+        if (keep_rate <= 0.0 || keep_rate > 1.0) {
+            throw runtime_error("LayerDropout: rate must be in (0,1]");
+        }
+    }
+
+    void forward(const MatD& inputs_batch)
+    {
+        inputs = inputs_batch;
+        scaled_binary_mask.assign(inputs.rows, inputs.cols);
+        output.assign(inputs.rows, inputs.cols);
+
+        for (size_t i = 0; i < inputs.rows; ++i) {
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                // scale mask to maintain expected value
+                // equivalent math to applying a Bernoulli distribution
+                double mask = (random_uniform() < keep_rate) ? (1.0 / keep_rate) : 0.0;
+                scaled_binary_mask(i, j) = mask;
+
+                output(i, j) = inputs(i, j) * scaled_binary_mask(i, j);
+            }
+        }
+    }
+
+    void backward(const MatD& dvalues)
+    {
+        if (dvalues.rows != scaled_binary_mask.rows || dvalues.cols != scaled_binary_mask.cols) {
+            throw runtime_error("LayerDropout::backward: dvalues shape mismatch");
+        }
+
+        dinputs.assign(dvalues.rows, dvalues.cols);
+        for (size_t i = 0; i < dvalues.rows; ++i) {
+            for (size_t j = 0; j < dvalues.cols; ++j) {
+                dinputs(i, j) = dvalues(i, j) * scaled_binary_mask(i, j);
+            }
+        }
+    }
+};
+
 // activations
 // ReLU activation (forward only)
 class ActivationReLU
@@ -1140,16 +1191,18 @@ int main()
 
     LayerDense dense1(2, 64, 0.0, 5e-4, 0.0, 5e-4);
     ActivationReLU activation1;
+    LayerDropout dropout1(0.1);
     LayerDense dense2(64, 3);
     ActivationSoftmaxLossCategoricalCrossEntropy loss_activation;
-    OptimizerAdam optimizer(0.02, 5e-7);
+    OptimizerAdam optimizer(0.05, 5e-5);
 
     cout << fixed << setprecision(3);
 
     for (size_t epoch = 0; epoch <= 10000; ++epoch) {
         dense1.forward(X);
         activation1.forward(dense1.output);
-        dense2.forward(activation1.output);
+        dropout1.forward(activation1.output);
+        dense2.forward(dropout1.output);
 
         double data_loss = loss_activation.forward(dense2.output, y);
         double reg_loss = Loss::regularization_loss(dense1) + Loss::regularization_loss(dense2);
@@ -1167,7 +1220,8 @@ int main()
 
         loss_activation.backward(loss_activation.output, y);
         dense2.backward(loss_activation.dinputs);
-        activation1.backward(dense2.dinputs);
+        dropout1.backward(dense2.dinputs);
+        activation1.backward(dropout1.dinputs);
         dense1.backward(activation1.dinputs);
 
         optimizer.pre_update_params();

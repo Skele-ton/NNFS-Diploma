@@ -619,6 +619,66 @@ TEST_CASE("LayerDense backward throws on shape mismatch")
                          runtime_error);
 }
 
+// LayerDropout tests
+TEST_CASE("LayerDropout forward scales activations with binary mask")
+{
+    mt19937 saved = g_rng; // capture RNG to reproduce mask
+    uniform_real_distribution<double> dist(0.0, 1.0);
+    const double keep = 0.9;
+
+    double expected_mask[2];
+    for (double& m : expected_mask) {
+        double r = dist(saved);
+        m = (r < keep) ? (1.0 / keep) : 0.0;
+    }
+
+    // restore RNG to the saved state for deterministic mask generation
+    g_rng = saved;
+
+    MatD inputs(1, 2);
+    inputs(0, 0) = 2.0;
+    inputs(0, 1) = -3.0;
+
+    LayerDropout dropout(0.1); // keep 0.9
+    dropout.forward(inputs);
+
+    CHECK(dropout.scaled_binary_mask(0, 0) == doctest::Approx(expected_mask[0]));
+    CHECK(dropout.scaled_binary_mask(0, 1) == doctest::Approx(expected_mask[1]));
+    CHECK(dropout.output(0, 0) == doctest::Approx(inputs(0, 0) * expected_mask[0]));
+    CHECK(dropout.output(0, 1) == doctest::Approx(inputs(0, 1) * expected_mask[1]));
+}
+
+TEST_CASE("LayerDropout backward multiplies by mask")
+{
+    LayerDropout dropout(0.2);
+    dropout.scaled_binary_mask.assign(1, 2);
+    dropout.scaled_binary_mask(0, 0) = 5.0;
+    dropout.scaled_binary_mask(0, 1) = 0.0;
+
+    MatD dvalues(1, 2);
+    dvalues(0, 0) = 3.0; dvalues(0, 1) = 4.0;
+
+    dropout.backward(dvalues);
+
+    CHECK(dropout.dinputs(0, 0) == doctest::Approx(15.0));
+    CHECK(dropout.dinputs(0, 1) == doctest::Approx(0.0));
+
+    MatD bad_dvalues(2, 2, 0.0); // mismatched rows
+    CHECK_THROWS_WITH_AS(dropout.backward(bad_dvalues),
+                         "LayerDropout::backward: dvalues shape mismatch",
+                         runtime_error);
+}
+
+TEST_CASE("LayerDropout constructor throws on invalid rate")
+{
+    CHECK_THROWS_WITH_AS(LayerDropout(1.1),
+                         "LayerDropout: rate must be in (0,1]",
+                         runtime_error);
+    CHECK_THROWS_WITH_AS(LayerDropout(1.0),
+                         "LayerDropout: rate must be in (0,1]",
+                         runtime_error);
+}
+
 // ActivationReLU tests
 TEST_CASE("ActivationReLU sets negatives to zero and keeps positives")
 {
