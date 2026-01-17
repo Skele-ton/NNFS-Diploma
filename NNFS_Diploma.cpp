@@ -126,7 +126,7 @@ public:
     Matrix clip(double min_value, double max_value) const
     {
         if (min_value > max_value) {
-            throw runtime_error("clip: min_value must not exceed max_value");
+            throw runtime_error("Matrix::clip: min_value must not exceed max_value");
         }
 
         Matrix result(rows, cols);
@@ -148,7 +148,7 @@ public:
     void scale_by_scalar(size_t samples)
     {
         if (samples == 0) {
-            throw runtime_error("scale_by_scalar: samples must be bigger than 0");
+            throw runtime_error("Matrix::scale_by_scalar: samples must be bigger than 0");
         }
 
         const double inv = 1.0 / static_cast<double>(samples);
@@ -157,6 +157,39 @@ public:
                 (*this)(i, j) *= inv;
             }
         }
+    }
+
+    static Matrix from_vec_as_column(const VecI& vec)
+    {
+        Matrix result(vec.size(), 1);
+        for (size_t i = 0; i < vec.size(); ++i) {
+            result(i, 0) = static_cast<double>(vec[i]);
+        }
+        return result;
+    }
+
+    static Matrix dot(const Matrix& a, const Matrix& b)
+    {
+        if (a.is_empty() || b.is_empty()) {
+            throw runtime_error("Matrix::dot: matrices must not be empty");
+        }
+
+        if (a.cols != b.rows) {
+            throw runtime_error("Matrix::dot: incompatible shapes");
+        }
+
+        Matrix result(a.rows, b.cols, 0.0);
+
+        for (size_t i = 0; i < a.rows; ++i) {
+            for (size_t k = 0; k < a.cols; ++k) {
+                double aik = a(i, k);
+                for (size_t j = 0; j < b.cols; ++j) {
+                    result(i, j) += aik * b(k, j);
+                }
+            }
+        }
+
+        return result;
     }
 
     double& operator()(size_t r, size_t c)
@@ -171,30 +204,6 @@ public:
 };
 
 using MatD = Matrix;
-
-MatD matrix_dot(const MatD& a, const MatD& b)
-{
-    if (a.is_empty() || b.is_empty()) {
-        throw runtime_error("matrix_dot: matrices must not be empty");
-    }
-
-    if (a.cols != b.rows) {
-        throw runtime_error("matrix_dot: incompatible shapes");
-    }
-
-    MatD result(a.rows, b.cols, 0.0);
-
-    for (size_t i = 0; i < a.rows; ++i) {
-        for (size_t k = 0; k < a.cols; ++k) {
-            double aik = a(i, k);
-            for (size_t j = 0; j < b.cols; ++j) {
-                result(i, j) += aik * b(k, j);
-            }
-        }
-    }
-
-    return result;
-}
 
 // accuracy for sparse and one-hot labels
 template <typename YTrue>
@@ -256,6 +265,33 @@ double classification_accuracy(const MatD& y_pred, const YTrue& y_true)
     }
 
     return static_cast<double>(correct) / static_cast<double>(samples);
+}
+
+double binary_accuracy(const MatD& y_pred, const MatD& y_true)
+{
+    if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
+        throw runtime_error("binary_accuracy: y_pred and y_true must have the same shape");
+    }
+
+    if (y_pred.cols == 0) {
+        throw runtime_error("binary_accuracy: y_pred must have at least one column");
+    }
+
+    size_t correct = 0;
+    const size_t samples = y_pred.rows;
+    const size_t outputs = y_pred.cols;
+
+    for (size_t i = 0; i < samples; ++i) {
+        for (size_t j = 0; j < outputs; ++j) {
+            int pred = y_pred(i, j) > 0.5 ? 1 : 0;
+            int truth = static_cast<int>(y_true(i, j) > 0.5 ? 1 : 0);
+            if (pred == truth) {
+                ++correct;
+            }
+        }
+    }
+
+    return static_cast<double>(correct) / static_cast<double>(samples * outputs);
 }
 
 // training data
@@ -481,7 +517,7 @@ public:
             throw runtime_error("LayerDense::forward: biases.size() must match weights.cols");
         }
 
-        output = matrix_dot(inputs, weights);
+        output = MatD::dot(inputs, weights);
         for (size_t i = 0; i < output.rows; ++i) {
             for (size_t j = 0; j < output.cols; ++j) {
                 output(i, j) += biases[j];
@@ -496,7 +532,7 @@ public:
         }
 
         MatD inputs_T = inputs.transpose();
-        dweights = matrix_dot(inputs_T, dvalues);
+        dweights = MatD::dot(inputs_T, dvalues);
 
         dbiases.assign(biases.size(), 0.0);
         for (size_t i = 0; i < dvalues.rows; ++i) {
@@ -537,7 +573,7 @@ public:
         }
 
         MatD weights_T = weights.transpose();
-        dinputs = matrix_dot(dvalues, weights_T);
+        dinputs = MatD::dot(dvalues, weights_T);
     }
 };
 
@@ -561,6 +597,8 @@ public:
 
     void forward(const MatD& inputs_batch)
     {
+        // TODO: if you can remove inputs from this layer class when finished, do it
+        // do this for other places where inputs are saved but never used as well
         inputs = inputs_batch;
         scaled_binary_mask.assign(inputs.rows, inputs.cols);
         output.assign(inputs.rows, inputs.cols);
@@ -693,6 +731,357 @@ public:
                 dinputs(i, j) = output(i, j) * (dvalues(i, j) - alpha);
             }
         }
+    }
+};
+
+// Sigmoid activation
+class ActivationSigmoid
+{
+public:
+    MatD inputs;
+    MatD output;
+    MatD dinputs;
+
+    void forward(const MatD& inputs_batch)
+    {
+        inputs = inputs_batch;
+        output.assign(inputs.rows, inputs.cols);
+        for (size_t i = 0; i < inputs.rows; ++i) {
+            for (size_t j = 0; j < inputs.cols; ++j) {
+                output(i, j) = 1.0 / (1.0 + exp(-inputs(i, j)));
+            }
+        }
+    }
+
+    void backward(const MatD& dvalues)
+    {
+        if (dvalues.rows != output.rows || dvalues.cols != output.cols) {
+            throw runtime_error("ActivationSigmoid::backward: dvalues shape mismatch");
+        }
+
+        dinputs.assign(dvalues.rows, dvalues.cols);
+        for (size_t i = 0; i < dvalues.rows; ++i) {
+            for (size_t j = 0; j < dvalues.cols; ++j) {
+                const double sigmoid_output = output(i, j);
+                dinputs(i, j) = dvalues(i, j) * (1.0 - sigmoid_output) * sigmoid_output;
+            }
+        }
+    }
+};
+
+// loss functions
+class Loss
+{
+public:
+    virtual ~Loss() = default;
+
+    template <typename YTrue>
+    double calculate(const MatD& output, const YTrue& y_true) const
+    {
+        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
+            "Loss::calculate: y_true must be VecI (sparse) or MatD (one-hot)");
+
+        VecD sample_losses = forward(output, y_true);
+        return mean_sample_losses(sample_losses);
+    }
+
+    static double regularization_loss(const LayerDense& layer)
+    {
+        double regularization = 0.0;
+
+        const double weight_l1 = (layer.weight_regularizer_l1 > 0.0) ? layer.weight_regularizer_l1 : 0.0;
+        const double weight_l2 = (layer.weight_regularizer_l2 > 0.0) ? layer.weight_regularizer_l2 : 0.0;
+
+        if (weight_l1 != 0.0 || weight_l2 != 0.0) {
+            double sum_abs = 0.0;
+            double sum_sq  = 0.0;
+
+            for (double weight : layer.weights.data) {
+                if (weight_l1 != 0.0) sum_abs += abs(weight);
+                if (weight_l2 != 0.0)  sum_sq  += weight * weight;
+            }
+            regularization += weight_l1 * sum_abs + weight_l2 * sum_sq;
+        }
+
+        const double bias_l1 = (layer.bias_regularizer_l1 > 0.0) ? layer.bias_regularizer_l1 : 0.0;
+        const double bias_l2 = (layer.bias_regularizer_l2 > 0.0) ? layer.bias_regularizer_l2 : 0.0;
+
+        if (bias_l1 != 0.0 || bias_l2 != 0.0) {
+            double sum_abs = 0.0;
+            double sum_sq  = 0.0;
+
+            for (double bias : layer.biases) {
+                if (bias_l1 != 0.0) sum_abs += abs(bias);
+                if (bias_l2 != 0.0) sum_sq  += bias * bias;
+            }
+            regularization += bias_l1 * sum_abs + bias_l2 * sum_sq;
+        }
+
+        return regularization;
+    }
+
+protected:
+    static double clamp_prob(double p)
+    {
+        constexpr double eps = 1e-7;
+        if (p < eps) return eps;
+        if (p > 1.0 - eps) return 1.0 - eps;
+        return p;
+    }
+
+    static double mean_sample_losses(const VecD& sample_losses)
+    {
+        if (sample_losses.empty()) {
+            throw runtime_error("Loss::mean_sample_losses: sample_losses must contain at least one element");
+        }
+
+        double sum = 0.0;
+        for (double sample_loss : sample_losses) {
+            sum += sample_loss;
+        }
+
+        return sum / static_cast<double>(sample_losses.size());
+    }
+
+    virtual VecD forward(const MatD& output, const VecI& y_true) const = 0;
+    virtual VecD forward(const MatD& output, const MatD& y_true) const = 0;
+};
+
+class LossCategoricalCrossEntropy : public Loss
+{
+public:
+    MatD dinputs;
+
+    // sparse labels
+    VecD forward(const MatD& y_pred, const VecI& y_true) const override
+    {
+        if (y_pred.rows != y_true.size()) {
+            throw runtime_error("LossCategoricalCrossEntropy: y_pred.rows must match y_true.size()");
+        }
+
+        MatD clipped = y_pred.clip(1e-7, 1.0 - 1e-7);
+        VecD losses(y_pred.rows, 0.0);
+
+        for (size_t i = 0; i < y_pred.rows; ++i) {
+            int class_idx = y_true[i];
+            if (class_idx < 0 || static_cast<size_t>(class_idx) >= y_pred.cols) {
+                throw runtime_error("LossCategoricalCrossEntropy: class index out of range");
+            }
+
+            double confidence = clipped(i, static_cast<size_t>(class_idx));
+            losses[i] = -log(confidence);
+        }
+
+        return losses;
+    }
+
+    // one-hot labels
+    VecD forward(const MatD& y_pred, const MatD& y_true) const override
+    {
+        if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
+            throw runtime_error("LossCategoricalCrossEntropy: y_pred and y_true must have the same shape");
+        }
+
+        MatD clipped = y_pred.clip(1e-7, 1.0 - 1e-7);
+        VecD losses(y_pred.rows, 0.0);
+
+        for (size_t i = 0; i < y_pred.rows; ++i) {
+            double confidence = 0.0;
+            for (size_t j = 0; j < y_pred.cols; ++j) {
+                confidence += clipped(i, j) * y_true(i, j);
+            }
+
+            losses[i] = -log(confidence);
+        }
+
+        return losses;
+    }
+
+    // sparse labels
+    void backward(const MatD& dvalues, const VecI& y_true) // dvalues = y_pred
+    {
+        if (dvalues.rows != y_true.size()) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels  = dvalues.cols;
+
+        if (samples == 0) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
+        }
+
+        dinputs.assign(samples, labels, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            const int class_idx = y_true[i];
+            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
+                throw runtime_error("LossCategoricalCrossEntropy::backward: class index out of range");
+            }
+
+            const size_t c = static_cast<size_t>(class_idx);
+            double p = dvalues(i, c);
+
+            p = clamp_prob(p);
+
+            dinputs(i, c) = -1.0 / p;
+        }
+
+        dinputs.scale_by_scalar(samples);
+    }
+
+    // one-hot labels
+    void backward(const MatD& dvalues, const MatD& y_true) // dvalues = y_pred
+    {
+        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels  = dvalues.cols;
+
+        if (samples == 0) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
+        }
+
+        dinputs.assign(samples, labels, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            for (size_t j = 0; j < labels; ++j) {
+                double p = dvalues(i, j);
+
+                p = clamp_prob(p);
+
+                dinputs(i, j) = -y_true(i, j) / p;
+            }
+        }
+
+        dinputs.scale_by_scalar(samples);
+    }
+};
+
+class LossBinaryCrossentropy : public Loss
+{
+public:
+    MatD dinputs;
+
+    VecD forward(const MatD& y_pred, const VecI&) const override
+    {
+        (void)y_pred; // unused, kept for interface symmetry
+        throw runtime_error("LossBinaryCrossentropy: y_true must be MatD");
+    }
+
+    VecD forward(const MatD& y_pred, const MatD& y_true) const override
+    {
+        if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
+            throw runtime_error("LossBinaryCrossentropy: y_pred and y_true must have the same shape");
+        }
+
+        const size_t samples = y_pred.rows;
+        const size_t outputs = y_pred.cols;
+        VecD sample_losses(samples, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            double loss_sum = 0.0;
+            for (size_t j = 0; j < outputs; ++j) {
+                double pred = clamp_prob(y_pred(i, j));
+                double truth = y_true(i, j);
+                loss_sum += -(truth * log(pred) + (1.0 - truth) * log(1.0 - pred));
+            }
+            sample_losses[i] = loss_sum / static_cast<double>(outputs);
+        }
+
+        return sample_losses;
+    }
+
+    void backward(const MatD& dvalues, const MatD& y_true) // dvalues = y_pred
+    {
+        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
+            throw runtime_error("LossBinaryCrossentropy::backward: shapes of dvalues and y_true must match");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t outputs = dvalues.cols;
+
+        dinputs.assign(samples, outputs);
+
+        for (size_t i = 0; i < samples; ++i) {
+            for (size_t j = 0; j < outputs; ++j) {
+                double pred = clamp_prob(dvalues(i, j));
+                double truth = y_true(i, j);
+                dinputs(i, j) = -(truth / pred - (1.0 - truth) / (1.0 - pred)) / static_cast<double>(outputs);
+            }
+        }
+
+        dinputs.scale_by_scalar(samples);
+    }
+};
+
+// Softmax classifier - combined Softmax activation and cross-entropy loss
+class ActivationSoftmaxLossCategoricalCrossEntropy
+{
+public:
+    ActivationSoftmax activation;
+    LossCategoricalCrossEntropy loss;
+    MatD output;
+    MatD dinputs;
+
+    template <typename YTrue>
+    double forward(const MatD& inputs, const YTrue& y_true)
+    {
+        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
+            "y_true must be VecI (sparse) or MatD (one-hot)");
+
+        activation.forward(inputs);
+        output = activation.output;
+        return loss.calculate(output, y_true);
+    }
+
+    // sparse labels
+    void backward(const MatD& dvalues, const VecI& y_true) // dvalues = predictions from the activation functions
+    {
+        if (dvalues.rows != y_true.size()) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
+        }
+
+        const size_t samples = dvalues.rows;
+        const size_t labels = dvalues.cols;
+
+        dinputs = dvalues;
+        for (size_t i = 0; i < samples; ++i) {
+            int class_idx = y_true[i];
+            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
+                throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: class index out of range");
+            }
+            dinputs(i, static_cast<size_t>(class_idx)) -= 1.0;
+        }
+
+        dinputs.scale_by_scalar(samples);
+    }
+
+    // one-hot labels (turns them into sparse and then calls the other backward method)
+    void backward(const MatD& dvalues, const MatD& y_true)
+    {
+        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
+        }
+
+        VecI y_true_sparse(y_true.rows, 0);
+        for (size_t i = 0; i < y_true.rows; ++i) {
+            size_t class_idx = 0;
+            double max_val = y_true(i, 0);
+            for (size_t j = 1; j < y_true.cols; ++j) {
+                double v = y_true(i, j);
+                if (v > max_val) {
+                    max_val = v;
+                    class_idx = j;
+                    if (max_val == 1.0) break;
+                }
+            }
+            y_true_sparse[i] = static_cast<int>(class_idx);
+        }
+
+        backward(dvalues, y_true_sparse);
     }
 };
 
@@ -920,294 +1309,34 @@ public:
     }
 };
 
-// loss functions
-class Loss
-{
-public:
-    virtual ~Loss() = default;
-
-    template <typename YTrue>
-    double calculate(const MatD& output, const YTrue& y_true) const
-    {
-        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
-            "Loss::calculate: y_true must be VecI (sparse) or MatD (one-hot)");
-
-        VecD sample_losses = forward(output, y_true);
-        return mean_sample_losses(sample_losses);
-    }
-
-    static double regularization_loss(const LayerDense& layer)
-    {
-        double regularization = 0.0;
-
-        const double weight_l1 = (layer.weight_regularizer_l1 > 0.0) ? layer.weight_regularizer_l1 : 0.0;
-        const double weight_l2 = (layer.weight_regularizer_l2 > 0.0) ? layer.weight_regularizer_l2 : 0.0;
-
-        if (weight_l1 != 0.0 || weight_l2 != 0.0) {
-            double sum_abs = 0.0;
-            double sum_sq  = 0.0;
-
-            for (double weight : layer.weights.data) {
-                if (weight_l1 != 0.0) sum_abs += abs(weight);
-                if (weight_l2 != 0.0)  sum_sq  += weight * weight;
-            }
-            regularization += weight_l1 * sum_abs + weight_l2 * sum_sq;
-        }
-
-        const double bias_l1 = (layer.bias_regularizer_l1 > 0.0) ? layer.bias_regularizer_l1 : 0.0;
-        const double bias_l2 = (layer.bias_regularizer_l2 > 0.0) ? layer.bias_regularizer_l2 : 0.0;
-
-        if (bias_l1 != 0.0 || bias_l2 != 0.0) {
-            double sum_abs = 0.0;
-            double sum_sq  = 0.0;
-
-            for (double bias : layer.biases) {
-                if (bias_l1 != 0.0) sum_abs += abs(bias);
-                if (bias_l2 != 0.0) sum_sq  += bias * bias;
-            }
-            regularization += bias_l1 * sum_abs + bias_l2 * sum_sq;
-        }
-
-        return regularization;
-    }
-
-protected:
-    static double mean_sample_losses(const VecD& sample_losses)
-    {
-        if (sample_losses.empty()) {
-            throw runtime_error("Loss::mean_sample_losses: sample_losses must contain at least one element");
-        }
-
-        double sum = 0.0;
-        for (double sample_loss : sample_losses) {
-            sum += sample_loss;
-        }
-
-        return sum / static_cast<double>(sample_losses.size());
-    }
-
-    virtual VecD forward(const MatD& output, const VecI& y_true) const = 0;
-    virtual VecD forward(const MatD& output, const MatD& y_true) const = 0;
-};
-
-class LossCategoricalCrossEntropy : public Loss
-{
-public:
-    MatD dinputs;
-
-    // sparse labels
-    VecD forward(const MatD& y_pred, const VecI& y_true) const override
-    {
-        if (y_pred.rows != y_true.size()) {
-            throw runtime_error("LossCategoricalCrossEntropy: y_pred.rows must match y_true.size()");
-        }
-
-        MatD clipped = y_pred.clip(1e-7, 1.0 - 1e-7);
-        VecD losses(y_pred.rows, 0.0);
-
-        for (size_t i = 0; i < y_pred.rows; ++i) {
-            int class_idx = y_true[i];
-            if (class_idx < 0 || static_cast<size_t>(class_idx) >= y_pred.cols) {
-                throw runtime_error("LossCategoricalCrossEntropy: class index out of range");
-            }
-
-            double confidence = clipped(i, static_cast<size_t>(class_idx));
-            losses[i] = -log(confidence);
-        }
-
-        return losses;
-    }
-
-    // one-hot labels
-    VecD forward(const MatD& y_pred, const MatD& y_true) const override
-    {
-        if (y_pred.rows != y_true.rows || y_pred.cols != y_true.cols) {
-            throw runtime_error("LossCategoricalCrossEntropy: y_pred and y_true must have the same shape");
-        }
-
-        MatD clipped = y_pred.clip(1e-7, 1.0 - 1e-7);
-        VecD losses(y_pred.rows, 0.0);
-
-        for (size_t i = 0; i < y_pred.rows; ++i) {
-            double confidence = 0.0;
-            for (size_t j = 0; j < y_pred.cols; ++j) {
-                confidence += clipped(i, j) * y_true(i, j);
-            }
-
-            losses[i] = -log(confidence);
-        }
-
-        return losses;
-    }
-
-    // sparse labels
-    void backward(const MatD& dvalues, const VecI& y_true)
-    {
-        if (dvalues.rows != y_true.size()) {
-            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
-        }
-
-        const size_t samples = dvalues.rows;
-        const size_t labels  = dvalues.cols;
-
-        if (samples == 0) {
-            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
-        }
-
-        dinputs.assign(samples, labels, 0.0);
-
-        for (size_t i = 0; i < samples; ++i) {
-            const int class_idx = y_true[i];
-            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
-                throw runtime_error("LossCategoricalCrossEntropy::backward: class index out of range");
-            }
-
-            const size_t c = static_cast<size_t>(class_idx);
-            double p = dvalues(i, c);
-
-            p = clamp_prob(p);
-
-            dinputs(i, c) = -1.0 / p;
-        }
-
-        dinputs.scale_by_scalar(samples);
-    }
-
-    // one-hot labels
-    void backward(const MatD& dvalues, const MatD& y_true)
-    {
-        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
-            throw runtime_error("LossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
-        }
-
-        const size_t samples = dvalues.rows;
-        const size_t labels  = dvalues.cols;
-
-        if (samples == 0) {
-            throw runtime_error("LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample");
-        }
-
-        dinputs.assign(samples, labels, 0.0);
-
-        for (size_t i = 0; i < samples; ++i) {
-            for (size_t j = 0; j < labels; ++j) {
-                double p = dvalues(i, j);
-
-                p = clamp_prob(p);
-
-                dinputs(i, j) = -y_true(i, j) / p;
-            }
-        }
-
-        dinputs.scale_by_scalar(samples);
-    }
-
-private:
-    static double clamp_prob(double p)
-    {
-        constexpr double eps = 1e-7;
-        if (p < eps) return eps;
-        if (p > 1.0 - eps) return 1.0 - eps;
-        return p;
-    }
-};
-
-// Softmax classifier - combined Softmax activation and cross-entropy loss
-class ActivationSoftmaxLossCategoricalCrossEntropy
-{
-public:
-    ActivationSoftmax activation;
-    LossCategoricalCrossEntropy loss;
-    MatD output;
-    MatD dinputs;
-
-    template <typename YTrue>
-    double forward(const MatD& inputs, const YTrue& y_true)
-    {
-        static_assert(is_same_v<YTrue, VecI> || is_same_v<YTrue, MatD>,
-            "y_true must be VecI (sparse) or MatD (one-hot)");
-
-        activation.forward(inputs);
-        output = activation.output;
-        return loss.calculate(output, y_true);
-    }
-
-    // sparse labels
-    void backward(const MatD& dvalues, const VecI& y_true)
-    {
-        if (dvalues.rows != y_true.size()) {
-            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()");
-        }
-
-        const size_t samples = dvalues.rows;
-        const size_t labels = dvalues.cols;
-
-        dinputs = dvalues;
-        for (size_t i = 0; i < samples; ++i) {
-            int class_idx = y_true[i];
-            if (class_idx < 0 || static_cast<size_t>(class_idx) >= labels) {
-                throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: class index out of range");
-            }
-            dinputs(i, static_cast<size_t>(class_idx)) -= 1.0;
-        }
-
-        dinputs.scale_by_scalar(samples);
-    }
-
-    // one-hot labels (turns them into sparse and then calls the other backward method)
-    void backward(const MatD& dvalues, const MatD& y_true)
-    {
-        if (dvalues.rows != y_true.rows || dvalues.cols != y_true.cols) {
-            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match");
-        }
-
-        VecI y_true_sparse(y_true.rows, 0);
-        for (size_t i = 0; i < y_true.rows; ++i) {
-            size_t class_idx = 0;
-            double max_val = y_true(i, 0);
-            for (size_t j = 1; j < y_true.cols; ++j) {
-                double v = y_true(i, j);
-                if (v > max_val) {
-                    max_val = v;
-                    class_idx = j;
-                    if (max_val == 1.0) break;
-                }
-            }
-            y_true_sparse[i] = static_cast<int>(class_idx);
-        }
-
-        backward(dvalues, y_true_sparse);
-    }
-};
-
 #ifndef NNFS_NO_MAIN
 int main()
 {
     MatD X;
     VecI y;
-    generate_spiral_data(100, 3, X, y);
-    plot_scatter_svg("plot.svg", X, y);
-    cout << "Saved scatter plot to plot.svg\n";
+    generate_spiral_data(100, 2, X, y);
+    MatD y_binary = MatD::from_vec_as_column(y);
 
     LayerDense dense1(2, 64, 0.0, 5e-4, 0.0, 5e-4);
     ActivationReLU activation1;
-    LayerDropout dropout1(0.1);
-    LayerDense dense2(64, 3);
-    ActivationSoftmaxLossCategoricalCrossEntropy loss_activation;
-    OptimizerAdam optimizer(0.05, 5e-5);
+    LayerDense dense2(64, 1);
+    ActivationSigmoid activation2;
+    LossBinaryCrossentropy loss_function;
+    OptimizerAdam optimizer(0.001, 5e-7);
 
     cout << fixed << setprecision(3);
 
     for (size_t epoch = 0; epoch <= 10000; ++epoch) {
         dense1.forward(X);
         activation1.forward(dense1.output);
-        dropout1.forward(activation1.output);
-        dense2.forward(dropout1.output);
+        dense2.forward(activation1.output);
+        activation2.forward(dense2.output);
 
-        double data_loss = loss_activation.forward(dense2.output, y);
+        double data_loss = loss_function.calculate(activation2.output, y_binary);
         double reg_loss = Loss::regularization_loss(dense1) + Loss::regularization_loss(dense2);
         double loss = data_loss + reg_loss;
-        double accuracy = classification_accuracy(loss_activation.output, y);
+
+        double accuracy = binary_accuracy(activation2.output, y_binary);
 
         if (epoch % 100 == 0) {
             cout << "epoch: " << epoch
@@ -1218,10 +1347,10 @@ int main()
                  << '\n';
         }
 
-        loss_activation.backward(loss_activation.output, y);
-        dense2.backward(loss_activation.dinputs);
-        dropout1.backward(dense2.dinputs);
-        activation1.backward(dropout1.dinputs);
+        loss_function.backward(activation2.output, y_binary);
+        activation2.backward(loss_function.dinputs);
+        dense2.backward(activation2.dinputs);
+        activation1.backward(dense2.dinputs);
         dense1.backward(activation1.dinputs);
 
         optimizer.pre_update_params();
@@ -1232,13 +1361,16 @@ int main()
 
     MatD X_test;
     VecI y_test;
-    generate_spiral_data(100, 3, X_test, y_test);
+    generate_spiral_data(100, 2, X_test, y_test);
+    MatD y_test_binary = MatD::from_vec_as_column(y_test);
 
     dense1.forward(X_test);
     activation1.forward(dense1.output);
     dense2.forward(activation1.output);
-    double test_loss = loss_activation.forward(dense2.output, y_test);
-    double test_accuracy = classification_accuracy(loss_activation.output, y_test);
+    activation2.forward(dense2.output);
+
+    double test_loss = loss_function.calculate(activation2.output, y_test_binary);
+    double test_accuracy = binary_accuracy(activation2.output, y_test_binary);
 
     cout << "validation, acc: " << test_accuracy
          << ", loss: " << test_loss

@@ -86,7 +86,7 @@ TEST_CASE("Matrix clip throws when min exceeds max")
 {
     MatD m(1, 1, 0.0);
     CHECK_THROWS_WITH_AS(m.clip(2.0, 1.0),
-                         "clip: min_value must not exceed max_value",
+                         "Matrix::clip: min_value must not exceed max_value",
                          runtime_error);
 }
 
@@ -94,12 +94,24 @@ TEST_CASE("Matrix scale_by_scalar throws on zero samples")
 {
     MatD m(1, 1, 2.0);
     CHECK_THROWS_WITH_AS(m.scale_by_scalar(0),
-                         "scale_by_scalar: samples must be bigger than 0",
+                         "Matrix::scale_by_scalar: samples must be bigger than 0",
                          runtime_error);
 }
 
-// matrix_dot tests
-TEST_CASE("matrix_dot multiplies small matrices correctly")
+TEST_CASE("Matrix from_vec_as_column converts ints to column matrix")
+{
+    VecI v = {1, -2, 3};
+    MatD col = MatD::from_vec_as_column(v);
+
+    CHECK(col.rows == 3);
+    CHECK(col.cols == 1);
+    CHECK(col(0, 0) == doctest::Approx(1.0));
+    CHECK(col(1, 0) == doctest::Approx(-2.0));
+    CHECK(col(2, 0) == doctest::Approx(3.0));
+}
+
+// Matrix dot tests
+TEST_CASE("Matrix dot multiplies small matrices correctly")
 {
     MatD a(2, 3);
     a(0, 0) = 1.0; a(0, 1) = 2.0; a(0, 2) = 3.0;
@@ -110,7 +122,7 @@ TEST_CASE("matrix_dot multiplies small matrices correctly")
     b(1, 0) = 9.0; b(1, 1) = 10.0;
     b(2, 0) = 11.0; b(2, 1) = 12.0;
 
-    MatD c = matrix_dot(a, b);
+    MatD c = Matrix::dot(a, b);
     CHECK(c.rows == 2);
     CHECK(c.cols == 2);
 
@@ -120,31 +132,31 @@ TEST_CASE("matrix_dot multiplies small matrices correctly")
     CHECK(c(1, 1) == doctest::Approx(154.0));
 }
 
-TEST_CASE("matrix_dot throws on empty matrices")
+TEST_CASE("Matrix dot throws on empty matrices")
 {
     MatD a;
     MatD b(1, 1, 1.0);
-    CHECK_THROWS_WITH_AS(matrix_dot(a, b),
-                         "matrix_dot: matrices must not be empty",
+    CHECK_THROWS_WITH_AS(Matrix::dot(a, b),
+                         "Matrix::dot: matrices must not be empty",
                          runtime_error);
 
     MatD c(1, 1, 1.0);
     MatD d;
-    CHECK_THROWS_WITH_AS(matrix_dot(c, d),
-                         "matrix_dot: matrices must not be empty",
+    CHECK_THROWS_WITH_AS(Matrix::dot(c, d),
+                         "Matrix::dot: matrices must not be empty",
                          runtime_error);
 }
 
-TEST_CASE("matrix_dot throws on incompatible shapes")
+TEST_CASE("Matrix dot throws on incompatible shapes")
 {
     MatD a(2, 3);
     MatD b(4, 1);
-    CHECK_THROWS_WITH_AS(matrix_dot(a, b),
-                         "matrix_dot: incompatible shapes",
+    CHECK_THROWS_WITH_AS(Matrix::dot(a, b),
+                         "Matrix::dot: incompatible shapes",
                          runtime_error);
 }
 
-// print vector test
+// print_vector test
 TEST_CASE("print_vector writes expected output")
 {
     std::ostringstream oss;
@@ -239,6 +251,41 @@ TEST_CASE("classification_accuracy throws on one-hot empty predictions")
     MatD targets(0, 0);
     CHECK_THROWS_WITH_AS(classification_accuracy(preds, targets),
                          "classification_accuracy: y_pred must be non-empty",
+                         runtime_error);
+}
+
+// binary_accuracy tests
+TEST_CASE("binary_accuracy computes fraction of matching thresholded outputs")
+{
+    MatD preds(2, 2);
+    preds(0, 0) = 0.6; preds(0, 1) = 0.4;
+    preds(1, 0) = 0.49; preds(1, 1) = 0.51;
+
+    MatD targets(2, 2);
+    targets(0, 0) = 1.0; targets(0, 1) = 0.0;
+    targets(1, 0) = 1.0; targets(1, 1) = 0.0;
+
+    double acc = binary_accuracy(preds, targets);
+    CHECK(acc == doctest::Approx(0.5)); // 2 of 4 outputs match after thresholding
+}
+
+TEST_CASE("binary_accuracy throws on shape mismatch")
+{
+    MatD preds(2, 1, 0.6);
+    MatD targets(1, 1, 1.0);
+
+    CHECK_THROWS_WITH_AS(binary_accuracy(preds, targets),
+                         "binary_accuracy: y_pred and y_true must have the same shape",
+                         runtime_error);
+}
+
+TEST_CASE("binary_accuracy throws when predictions have zero columns")
+{
+    MatD preds(1, 0);
+    MatD targets(1, 0);
+
+    CHECK_THROWS_WITH_AS(binary_accuracy(preds, targets),
+                         "binary_accuracy: y_pred must have at least one column",
                          runtime_error);
 }
 
@@ -833,6 +880,51 @@ TEST_CASE("ActivationSoftmax backward throws on shape mismatch")
                          runtime_error);
 }
 
+// ActivationSigmoid tests
+TEST_CASE("ActivationSigmoid forward produces outputs in (0,1)")
+{
+    MatD inputs(2, 2);
+    inputs(0, 0) = 0.0; inputs(0, 1) = 1.0;
+    inputs(1, 0) = -1.0; inputs(1, 1) = 2.0;
+
+    ActivationSigmoid activation;
+    activation.forward(inputs);
+
+    CHECK(activation.output(0, 0) == doctest::Approx(0.5));
+    CHECK(activation.output(0, 1) == doctest::Approx(1.0 / (1.0 + exp(-1.0))));
+    CHECK(activation.output(1, 0) == doctest::Approx(1.0 / (1.0 + exp(1.0))));
+    CHECK(activation.output(1, 1) == doctest::Approx(1.0 / (1.0 + exp(-2.0))));
+}
+
+TEST_CASE("ActivationSigmoid backward multiplies upstream gradient by sigmoid derivative")
+{
+    MatD inputs(1, 2);
+    inputs(0, 0) = 0.0; inputs(0, 1) = -2.0;
+
+    ActivationSigmoid activation;
+    activation.forward(inputs);
+
+    MatD upstream(1, 2, 1.0); // ones
+    activation.backward(upstream);
+
+    const double s0 = 1.0 / (1.0 + exp(-inputs(0, 0)));
+    const double s1 = 1.0 / (1.0 + exp(-inputs(0, 1)));
+    CHECK(activation.dinputs(0, 0) == doctest::Approx(upstream(0, 0) * (1.0 - s0) * s0));
+    CHECK(activation.dinputs(0, 1) == doctest::Approx(upstream(0, 1) * (1.0 - s1) * s1));
+}
+
+TEST_CASE("ActivationSigmoid backward throws on shape mismatch")
+{
+    MatD inputs(1, 1, 0.0);
+    ActivationSigmoid activation;
+    activation.forward(inputs);
+
+    MatD bad_dvalues(2, 1, 1.0);
+    CHECK_THROWS_WITH_AS(activation.backward(bad_dvalues),
+                         "ActivationSigmoid::backward: dvalues shape mismatch",
+                         runtime_error);
+}
+
 // general Loss class tests
 TEST_CASE("Loss regularization_loss sums L1 and L2 for weights and biases")
 {
@@ -1069,6 +1161,77 @@ TEST_CASE("LossCategoricalCrossEntropy backward throws on zero samples one-hot p
     LossCategoricalCrossEntropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
                          "LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample",
+                         runtime_error);
+}
+
+// LossBinaryCrossentropy tests
+TEST_CASE("LossBinaryCrossentropy calculates mean binary cross-entropy per sample")
+{
+    MatD preds(2, 2);
+    preds(0, 0) = 0.9; preds(0, 1) = 0.2;
+    preds(1, 0) = 0.3; preds(1, 1) = 0.6;
+
+    MatD targets(2, 2);
+    targets(0, 0) = 1.0; targets(0, 1) = 0.0;
+    targets(1, 0) = 0.0; targets(1, 1) = 1.0;
+
+    LossBinaryCrossentropy loss;
+    double mean_loss = loss.calculate(preds, targets);
+
+    CHECK(mean_loss == doctest::Approx(0.2990011586691898));
+}
+
+TEST_CASE("LossBinaryCrossentropy backward computes gradients and scales by samples")
+{
+    MatD preds(2, 2);
+    preds(0, 0) = 0.9; preds(0, 1) = 0.2;
+    preds(1, 0) = 0.3; preds(1, 1) = 0.6;
+
+    MatD targets(2, 2);
+    targets(0, 0) = 1.0; targets(0, 1) = 0.0;
+    targets(1, 0) = 0.0; targets(1, 1) = 1.0;
+
+    LossBinaryCrossentropy loss;
+    loss.backward(preds, targets);
+
+    CHECK(loss.dinputs.rows == 2);
+    CHECK(loss.dinputs.cols == 2);
+    CHECK(loss.dinputs(0, 0) == doctest::Approx(-0.27777778));
+    CHECK(loss.dinputs(0, 1) == doctest::Approx(0.3125));
+    CHECK(loss.dinputs(1, 0) == doctest::Approx(0.35714286));
+    CHECK(loss.dinputs(1, 1) == doctest::Approx(-0.41666667));
+}
+
+TEST_CASE("LossBinaryCrossentropy forward throws on shape mismatch")
+{
+    MatD preds(1, 2, 0.5);
+    MatD targets(2, 2, 0.5);
+
+    LossBinaryCrossentropy loss;
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, targets),
+                         "LossBinaryCrossentropy: y_pred and y_true must have the same shape",
+                         runtime_error);
+}
+
+TEST_CASE("LossBinaryCrossentropy forward rejects sparse labels")
+{
+    MatD preds(1, 1, 0.9);
+    VecI targets = {1};
+
+    LossBinaryCrossentropy loss;
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, targets),
+                         "LossBinaryCrossentropy: y_true must be MatD",
+                         runtime_error);
+}
+
+TEST_CASE("LossBinaryCrossentropy backward throws on shape mismatch")
+{
+    MatD preds(1, 2, 0.5);
+    MatD targets(1, 1, 0.5);
+
+    LossBinaryCrossentropy loss;
+    CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
+                         "LossBinaryCrossentropy::backward: shapes of dvalues and y_true must match",
                          runtime_error);
 }
 
