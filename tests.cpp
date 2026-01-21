@@ -6,6 +6,33 @@
 #define NNFS_NO_MAIN
 #include "NNFS_Diploma.cpp"
 
+// print_vector test
+TEST_CASE("print_vector writes expected output")
+{
+    std::ostringstream oss;
+    auto* old_buf = cout.rdbuf(oss.rdbuf());
+
+    VecD v = {1.0, 2.5, -3.0};
+    print_vector(v);
+
+    cout.rdbuf(old_buf);
+
+    CHECK(oss.str() == "1 2.5 -3\n");
+}
+
+// random_uniform test
+TEST_CASE("random_uniform produces values in unit interval")
+{
+    g_rng.seed(0);
+    double first = random_uniform();
+    double second = random_uniform();
+
+    CHECK(first >= 0.0);
+    CHECK(first < 1.0);
+    CHECK(second >= 0.0);
+    CHECK(second < 1.0);
+}
+
 //matrix tests
 TEST_CASE("Matrix basic operations")
 {
@@ -156,20 +183,6 @@ TEST_CASE("Matrix dot throws on incompatible shapes")
                          runtime_error);
 }
 
-// print_vector test
-TEST_CASE("print_vector writes expected output")
-{
-    std::ostringstream oss;
-    auto* old_buf = cout.rdbuf(oss.rdbuf());
-
-    VecD v = {1.0, 2.5, -3.0};
-    print_vector(v);
-
-    cout.rdbuf(old_buf);
-
-    CHECK(oss.str() == "1 2.5 -3\n");
-}
-
 // classification_accuracy tests
 TEST_CASE("classification_accuracy computes correct value for sparse labels")
 {
@@ -289,6 +302,42 @@ TEST_CASE("binary_accuracy throws when predictions have zero columns")
                          runtime_error);
 }
 
+TEST_CASE("regression_accuracy counts predictions within dynamic precision")
+{
+    MatD preds(2, 1);
+    preds(0, 0) = 0.10; preds(1, 0) = 0.30;
+
+    MatD targets(2, 1);
+    targets(0, 0) = 0.11; targets(1, 0) = 0.55;
+
+    double acc = regression_accuracy(preds, targets, 2.0);
+    CHECK(acc == doctest::Approx(0.5)); // standard_deviation / 2 ≈ 0.11, so only one value within range
+}
+
+TEST_CASE("regression_accuracy throws on shape mismatch or invalid precision")
+{
+    MatD preds(1, 1, 0.1);
+    MatD targets(2, 1, 0.1);
+
+    CHECK_THROWS_WITH_AS(regression_accuracy(preds, targets, 0.1),
+                         "regression_accuracy: y_pred and y_true must have the same shape",
+                         runtime_error);
+
+    MatD preds2(1, 1, 0.1);
+    MatD targets2(1, 1, 0.1);
+    CHECK_THROWS_WITH_AS(regression_accuracy(preds2, targets2, 0.0),
+                         "regression_accuracy: precision_divisor must be positive",
+                         runtime_error);
+
+    MatD empty_preds;
+    empty_preds.assign(0, 0, 0.0);
+    MatD empty_targets;
+    empty_targets.assign(0, 0, 0.0);
+    CHECK_THROWS_WITH_AS(regression_accuracy(empty_preds, empty_targets, 0.1),
+                         "regression_accuracy: inputs must be non-empty",
+                         runtime_error);
+}
+
 // generate_spiral_data tests
 TEST_CASE("generate_spiral_data shapes and labels are correct")
 {
@@ -332,18 +381,6 @@ TEST_CASE("generate_spiral_data throws on invalid arguments")
     CHECK_THROWS_WITH_AS(generate_spiral_data(10, 0, X, y),
                          "generate_spiral_data: invalid arguments",
                          runtime_error);
-}
-
-TEST_CASE("random_uniform produces values in unit interval")
-{
-    g_rng.seed(0);
-    double first = random_uniform();
-    double second = random_uniform();
-
-    CHECK(first >= 0.0);
-    CHECK(first < 1.0);
-    CHECK(second >= 0.0);
-    CHECK(second < 1.0);
 }
 
 // generate_vertical_data tests
@@ -390,6 +427,38 @@ TEST_CASE("generate_vertical_data fills samples with labels")
 
     CHECK(max_x != min_x);
     CHECK(max_y != min_y);
+}
+
+// generate_sine_data tests
+TEST_CASE("generate_sine_data outputs sine-like pairs")
+{
+    MatD X;
+    MatD y;
+
+    g_rng.seed(0);
+    generate_sine_data(5, X, y);
+
+    CHECK(X.rows == 5);
+    CHECK(X.cols == 1);
+    CHECK(y.rows == 5);
+    CHECK(y.cols == 1);
+
+    for (size_t i = 1; i < X.rows; ++i) {
+        CHECK(X(i, 0) > X(i - 1, 0)); // increasing x
+    }
+
+    for (size_t i = 0; i < y.rows; ++i) {
+        CHECK(std::isfinite(y(i, 0)));
+    }
+}
+
+TEST_CASE("generate_sine_data throws on invalid arguments")
+{
+    MatD X;
+    MatD y;
+    CHECK_THROWS_WITH_AS(generate_sine_data(1, X, y),
+                         "generate_sine_data: invalid arguments",
+                         runtime_error);
 }
 
 // plot_scatter_svg tests
@@ -669,18 +738,18 @@ TEST_CASE("LayerDense backward throws on shape mismatch")
 // LayerDropout tests
 TEST_CASE("LayerDropout forward scales activations with binary mask")
 {
-    mt19937 saved = g_rng; // capture RNG to reproduce mask
+    g_rng.seed(0); // deterministic mask
     uniform_real_distribution<double> dist(0.0, 1.0);
     const double keep = 0.9;
 
     double expected_mask[2];
     for (double& m : expected_mask) {
-        double r = dist(saved);
+        double r = dist(g_rng);
         m = (r < keep) ? (1.0 / keep) : 0.0;
     }
 
-    // restore RNG to the saved state for deterministic mask generation
-    g_rng = saved;
+    // reset g_rng so LayerDropout sees the same sequence
+    g_rng.seed(0);
 
     MatD inputs(1, 2);
     inputs(0, 0) = 2.0;
@@ -925,6 +994,43 @@ TEST_CASE("ActivationSigmoid backward throws on shape mismatch")
                          runtime_error);
 }
 
+// ActivationLinear tests
+TEST_CASE("ActivationLinear forward passes inputs through unchanged")
+{
+    MatD inputs(1, 3);
+    inputs(0, 0) = -1.0; inputs(0, 1) = 0.5; inputs(0, 2) = 2.0;
+
+    ActivationLinear activation;
+    activation.forward(inputs);
+
+    CHECK(activation.output.rows == inputs.rows);
+    CHECK(activation.output.cols == inputs.cols);
+    for (size_t j = 0; j < inputs.cols; ++j) {
+        CHECK(activation.output(0, j) == doctest::Approx(inputs(0, j)));
+    }
+}
+
+TEST_CASE("ActivationLinear backward copies upstream gradients and checks shape")
+{
+    MatD inputs(1, 2);
+    inputs(0, 0) = 0.1; inputs(0, 1) = -0.2;
+
+    ActivationLinear activation;
+    activation.forward(inputs);
+
+    MatD upstream(1, 2);
+    upstream(0, 0) = 3.0; upstream(0, 1) = -4.0;
+    activation.backward(upstream);
+
+    CHECK(activation.dinputs(0, 0) == doctest::Approx(3.0));
+    CHECK(activation.dinputs(0, 1) == doctest::Approx(-4.0));
+
+    MatD bad(2, 2, 0.0);
+    CHECK_THROWS_WITH_AS(activation.backward(bad),
+                         "ActivationLinear::backward: dvalues shape mismatch",
+                         runtime_error);
+}
+
 // general Loss class tests
 TEST_CASE("Loss regularization_loss sums L1 and L2 for weights and biases")
 {
@@ -1113,7 +1219,7 @@ TEST_CASE("LossCategoricalCrossEntropy backward throws on sparse shape mismatch"
 
     LossCategoricalCrossEntropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
-                         "LossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()",
+                         "LossCategoricalCrossEntropy::backward: y_pred.rows must match y_true.size()",
                          runtime_error);
 }
 
@@ -1125,7 +1231,7 @@ TEST_CASE("LossCategoricalCrossEntropy backward throws on zero samples sparse pa
 
     LossCategoricalCrossEntropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
-                         "LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample",
+                         "LossCategoricalCrossEntropy::backward: y_pred must contain at least one sample",
                          runtime_error);
 }
 
@@ -1147,7 +1253,7 @@ TEST_CASE("LossCategoricalCrossEntropy backward throws on one-hot shape mismatch
 
     LossCategoricalCrossEntropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
-                         "LossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match",
+                         "LossCategoricalCrossEntropy::backward: shapes of y_pred and y_true must match",
                          runtime_error);
 }
 
@@ -1160,7 +1266,7 @@ TEST_CASE("LossCategoricalCrossEntropy backward throws on zero samples one-hot p
 
     LossCategoricalCrossEntropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
-                         "LossCategoricalCrossEntropy::backward: dvalues must contain at least one sample",
+                         "LossCategoricalCrossEntropy::backward: y_pred must contain at least one sample",
                          runtime_error);
 }
 
@@ -1231,7 +1337,99 @@ TEST_CASE("LossBinaryCrossentropy backward throws on shape mismatch")
 
     LossBinaryCrossentropy loss;
     CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
-                         "LossBinaryCrossentropy::backward: shapes of dvalues and y_true must match",
+                         "LossBinaryCrossentropy::backward: shapes of y_pred and y_true must match",
+                         runtime_error);
+}
+
+// LossMeanSquaredError tests
+TEST_CASE("LossMeanSquaredError computes average squared error and gradients")
+{
+    MatD preds(2, 1);
+    preds(0, 0) = 0.0; preds(1, 0) = 1.0;
+
+    MatD targets(2, 1);
+    targets(0, 0) = 1.0; targets(1, 0) = 0.0;
+
+    LossMeanSquaredError loss;
+    double mean_loss = loss.calculate(preds, targets);
+    CHECK(mean_loss == doctest::Approx(1.0));
+
+    loss.backward(preds, targets);
+    CHECK(loss.dinputs(0, 0) == doctest::Approx(-1.0));
+    CHECK(loss.dinputs(1, 0) == doctest::Approx(1.0));
+}
+
+TEST_CASE("LossMeanSquaredError validates label types and shapes")
+{
+    MatD preds(1, 1, 0.0);
+    VecI sparse = {0};
+
+    LossMeanSquaredError loss;
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, sparse),
+                         "LossMeanSquaredError: y_true must be MatD",
+                         runtime_error);
+
+    MatD targets(2, 1, 0.0);
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, targets),
+                         "LossMeanSquaredError: y_pred and y_true must have the same shape",
+                         runtime_error);
+
+    MatD empty_preds;
+    empty_preds.assign(0, 0, 0.0);
+    MatD empty_targets;
+    empty_targets.assign(0, 0, 0.0);
+    CHECK_THROWS_WITH_AS(loss.calculate(empty_preds, empty_targets),
+                         "LossMeanSquaredError: y_pred must contain at least one element",
+                         runtime_error);
+
+    CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
+                         "LossMeanSquaredError::backward: shapes of y_pred and y_true must match",
+                         runtime_error);
+}
+
+// LossMeanAbsoluteError tests
+TEST_CASE("LossMeanAbsoluteError computes average absolute error and gradients")
+{
+    MatD preds(2, 1);
+    preds(0, 0) = 0.0; preds(1, 0) = 1.0;
+
+    MatD targets(2, 1);
+    targets(0, 0) = 1.0; targets(1, 0) = 0.0;
+
+    LossMeanAbsoluteError loss;
+    double mean_loss = loss.calculate(preds, targets);
+    CHECK(mean_loss == doctest::Approx(1.0));
+
+    loss.backward(preds, targets);
+    CHECK(loss.dinputs(0, 0) == doctest::Approx(-0.5));
+    CHECK(loss.dinputs(1, 0) == doctest::Approx(0.5));
+}
+
+TEST_CASE("LossMeanAbsoluteError validates label types and shapes")
+{
+    MatD preds(1, 1, 0.0);
+    VecI sparse = {0};
+
+    LossMeanAbsoluteError loss;
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, sparse),
+                         "LossMeanAbsoluteError: y_true must be MatD",
+                         runtime_error);
+
+    MatD targets(2, 1, 0.0);
+    CHECK_THROWS_WITH_AS(loss.calculate(preds, targets),
+                         "LossMeanAbsoluteError: y_pred and y_true must have the same shape",
+                         runtime_error);
+
+    MatD empty_preds;
+    empty_preds.assign(0, 0, 0.0);
+    MatD empty_targets;
+    empty_targets.assign(0, 0, 0.0);
+    CHECK_THROWS_WITH_AS(loss.calculate(empty_preds, empty_targets),
+                         "LossMeanAbsoluteError: y_pred must contain at least one element",
+                         runtime_error);
+
+    CHECK_THROWS_WITH_AS(loss.backward(preds, targets),
+                         "LossMeanAbsoluteError::backward: shapes of y_pred and y_true must match",
                          runtime_error);
 }
 
@@ -1305,7 +1503,7 @@ TEST_CASE("ActivationSoftmaxLossCategoricalCrossEntropy backward throws on spars
 
     MatD bad_dvalues(1, 2, 0.0); // wrong number of rows
     CHECK_THROWS_WITH_AS(combo.backward(bad_dvalues, y_true),
-                         "ActivationSoftmaxLossCategoricalCrossEntropy::backward: dvalues.rows must match y_true.size()",
+                         "ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred.rows must match y_true.size()",
                          runtime_error);
 }
 
@@ -1327,7 +1525,7 @@ TEST_CASE("ActivationSoftmaxLossCategoricalCrossEntropy backward throws on one-h
 
     ActivationSoftmaxLossCategoricalCrossEntropy combo;
     CHECK_THROWS_WITH_AS(combo.backward(dvalues, y_true),
-                         "ActivationSoftmaxLossCategoricalCrossEntropy::backward: shapes of dvalues and y_true must match",
+                         "ActivationSoftmaxLossCategoricalCrossEntropy::backward: shapes of y_pred and y_true must match",
                          runtime_error);
 }
 
