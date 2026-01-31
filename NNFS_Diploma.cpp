@@ -134,13 +134,19 @@ public:
     }
     // ===================================
 
-    void scale_by_scalar(size_t samples)
+    bool is_row_vector() const { return rows == 1 && cols > 0; }
+
+    bool is_col_vector() const { return cols == 1 && rows > 0; }
+
+    bool is_vector() const { return is_row_vector() || is_col_vector(); }
+
+    void scale_by_scalar(size_t value)
     {
-        if (samples == 0) {
-            throw runtime_error("Matrix::scale_by_scalar: samples must be bigger than 0");
+        if (value == 0) {
+            throw runtime_error("Matrix::scale_by_scalar: value cannot be zero 0");
         }
 
-        const double inv = 1.0 / static_cast<double>(samples);
+        const double inv = 1.0 / static_cast<double>(value);
         for (size_t i = 0; i < rows; ++i) {
             for (size_t j = 0; j < cols; ++j) {
                 (*this)(i, j) *= inv;
@@ -182,7 +188,7 @@ public:
     {
         if (is_empty()) return Matrix();
 
-        Matrix result(1, rows);
+        Matrix result(rows, 1);
 
         for (size_t i = 0; i < rows; ++i) {
             size_t biggest_j = 0;
@@ -196,7 +202,7 @@ public:
                 }
             }
 
-            result(0, i) = static_cast<double>(biggest_j);
+            result(i, 0) = static_cast<double>(biggest_j);
         }
 
         return result;
@@ -230,22 +236,6 @@ public:
         }
 
         return sum / (rows * cols);
-    }
-
-    Matrix from_one_dimensional_as_column() const
-    {
-        if (is_empty()) return Matrix();
-
-        if(rows != 1) {
-            throw runtime_error("Matrix::from_one_dimensional_as_column: the matrix has more than one row");
-        }
-
-        Matrix result(cols, 1);
-        for (size_t i = 0; i < cols; ++i) {
-            result(i, 0) = static_cast<double>(data[i]);
-        }
-
-        return result;
     }
 
     static Matrix dot(const Matrix& a, const Matrix& b)
@@ -284,7 +274,7 @@ void generate_spiral_data(size_t samples_per_class, size_t classes, Matrix& X_ou
 
     size_t total_samples = samples_per_class * classes;
     X_out.assign(total_samples, 2);
-    y_out.assign(1, total_samples);
+    y_out.assign(total_samples, 1);
 
     for (size_t class_idx = 0; class_idx < classes; ++class_idx) {
         size_t class_offset = class_idx * samples_per_class;
@@ -299,7 +289,7 @@ void generate_spiral_data(size_t samples_per_class, size_t classes, Matrix& X_ou
             size_t idx = class_offset + i;
             X_out(idx, 0) = x;
             X_out(idx, 1) = y;
-            y_out(0, idx) = static_cast<double>(class_idx);
+            y_out(idx, 0) = static_cast<double>(class_idx);
         }
     }
 }
@@ -314,7 +304,7 @@ void generate_vertical_data(size_t samples_per_class, size_t classes, Matrix& X_
 
     size_t total_samples = samples_per_class * classes;
     X_out.assign(total_samples, 2);
-    y_out.assign(1, total_samples);
+    y_out.assign(total_samples, 1);
 
     for (size_t class_idx = 0; class_idx < classes; ++class_idx) {
         size_t class_offset = class_idx * samples_per_class;
@@ -329,7 +319,7 @@ void generate_vertical_data(size_t samples_per_class, size_t classes, Matrix& X_
             X_out(idx, 0) = x;
             X_out(idx, 1) = y;
 
-            y_out(0, idx) = static_cast<double>(class_idx);
+            y_out(idx, 0) = static_cast<double>(class_idx);
         }
     }
 }
@@ -341,7 +331,7 @@ void generate_sine_data(size_t samples, Matrix& X_out, Matrix& y_out)
     }
 
     X_out.assign(samples, 1);
-    y_out.assign(1, samples);
+    y_out.assign(samples, 1);
 
     const double pi = acos(-1.0);
 
@@ -351,7 +341,7 @@ void generate_sine_data(size_t samples, Matrix& X_out, Matrix& y_out)
 
         const size_t idx = i;
         X_out(idx, 0) = x;
-        y_out(0, idx) = y;
+        y_out(idx, 0) = y;
     }
 }
 
@@ -367,9 +357,12 @@ void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& la
 
     const bool has_labels = !labels.is_empty();
     if (has_labels) {
-        labels.require_shape(1, num_points,
-            "plot_scatter_svg: labels must be shape (1,points.rows)");
+        const bool column_vector_like = (labels.rows == num_points && labels.cols == 1);
+        const bool row_vector_like = (labels.rows == 1 && labels.cols == num_points);
+        if (!column_vector_like && !row_vector_like) {
+            throw runtime_error("plot_scatter_svg: labels must be shape (N,1) or (1,N) where N = points.rows");
     }
+}
 
     double xmin = points(0, 0), xmax = points(0, 0);
     double ymin = points(0, 1), ymax = points(0, 1);
@@ -387,8 +380,8 @@ void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& la
     const double dist_y = abs(ymax - ymin);
 
     const double eps = 1e-12;
-    if(dist_x < eps || dist_y < eps) {
-        throw runtime_error("plot_scatter_svg: x and y must have non-zero range");
+    if (dist_x < eps || dist_y < eps) {
+        throw runtime_error("plot_scatter_svg: x and y must have non-zero distance between values");
     }
 
     const double pad_x = 0.08 * dist_x;
@@ -467,7 +460,11 @@ void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& la
         const double point_x = points(point_index, 0);
         const double point_y = points(point_index, 1);
 
-        const size_t class_id = has_labels ? labels.as_size_t(0, point_index) : 0;
+        size_t class_id = 0;
+        if (has_labels) {
+            if (labels.rows == num_points) class_id = labels.as_size_t(point_index, 0);
+            else class_id = labels.as_size_t(0, point_index);
+        }
         const size_t color_id = class_id  % num_of_colors;
         const char* class_color = colors[color_id];
 
@@ -787,6 +784,10 @@ public:
     Matrix predictions(const Matrix& outputs) const
     {
         outputs.require_non_empty("ActivationSoftmax::predictions: outputs must be non-empty");
+        if(outputs.cols < 2) {
+            throw runtime_error("ActivationSoftmax::predictions: computation of softmax predictions requires outputs.cols >= 2");
+        }
+
         return outputs.argmax();
     }
 };
@@ -973,6 +974,10 @@ class LossCategoricalCrossEntropy : public Loss
 public:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
+        if (y_pred.cols < 2) {
+            throw runtime_error("LossCategoricalCrossEntropy::forward: y_pred.cols must be >= 2");
+        }
+
         const size_t samples = y_pred.rows;
         const size_t classes = y_pred.cols;
 
@@ -980,22 +985,21 @@ public:
 
         Matrix y_true_sparse;
 
-        if(y_true.rows == 1) {
-            y_true.require_cols(samples, "LossCategoricalCrossEntropy::forward: sparse y_true must have shape (1, N)");
-
+        if (y_true.is_col_vector() && y_true.rows == samples) {
             y_true_sparse = y_true;
-        } else {
-            y_true.require_shape(samples, classes,
-                "LossCategoricalCrossEntropy::forward: one-hot y_true must match y_pred shape");
-
+        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+            y_true_sparse = y_true.transpose();
+        } else if (y_true.rows == samples && y_true.cols == classes) {
             y_true_sparse = y_true.argmax();
-
-            y_true_sparse.require_shape(1, samples,
-                "LossCategoricalCrossEntropy::forward: argmax(y_true) must return shape (1, N)");
+        } else {
+            throw runtime_error("LossCategoricalCrossEntropy::forward: y_true must be sparse (N,1) or one-hot (N,C)");
         }
 
+        y_true_sparse.require_shape(samples, 1,
+            "LossCategoricalCrossEntropy::forward: y_true_sparse must have shape (N,1)");
+
         for (size_t i = 0; i < samples; ++i) {
-            const size_t class_idx = y_true_sparse.as_size_t(0, i);
+            const size_t class_idx = y_true_sparse.as_size_t(i, 0);
 
             if (class_idx >= classes) {
                 throw runtime_error("LossCategoricalCrossEntropy::forward: y_true class index out of range");
@@ -1013,6 +1017,10 @@ public:
         y_pred.require_non_empty("LossCategoricalCrossEntropy::backward: y_pred must be non-empty");
         y_true.require_non_empty("LossCategoricalCrossEntropy::backward: y_true must be non-empty");
 
+        if (y_pred.cols < 2) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: y_pred.cols must be >= 2");
+        }
+
         const size_t samples = y_pred.rows;
         const size_t classes  = y_pred.cols;
 
@@ -1020,22 +1028,21 @@ public:
 
         Matrix y_true_sparse;
 
-        if(y_true.rows == 1) {
-            y_true.require_cols(samples, "LossCategoricalCrossEntropy::backward: sparse y_true must have shape (1, N)");
-
+        if (y_true.is_col_vector() && y_true.rows == samples) {
             y_true_sparse = y_true;
-        } else {
-            y_true.require_shape(samples, classes,
-                "LossCategoricalCrossEntropy::backward: one-hot y_true must match y_pred shape");
-
+        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+            y_true_sparse = y_true.transpose();
+        } else if (y_true.rows == samples && y_true.cols == classes) {
             y_true_sparse = y_true.argmax();
-
-            y_true_sparse.require_shape(1, samples,
-                "LossCategoricalCrossEntropy::backward: argmax(y_true) must return shape (1, N)");
+        } else {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: y_true must be sparse (N,1) or one-hot (N,C)");
         }
 
+        y_true_sparse.require_shape(samples, 1,
+            "LossCategoricalCrossEntropy::backward: y_true_sparse must have shape (N,1)");
+
         for (size_t i = 0; i < samples; ++i) {
-            const size_t class_idx = y_true_sparse.as_size_t(0, i);
+            const size_t class_idx = y_true_sparse.as_size_t(i, 0);
             if (class_idx >= classes) {
                 throw runtime_error("LossCategoricalCrossEntropy::backward: class index out of range");
             }
@@ -1081,7 +1088,7 @@ public:
         y_true.require_non_empty("LossBinaryCrossentropy::backward: y_true must be non-empty");
 
         y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossBinaryCrossentropy::backward: shapes of y_pred and y_true must match");
+            "LossBinaryCrossentropy::backward: y_pred and y_true must have the same shape");
 
         const size_t samples = y_pred.rows;
         const size_t outputs = y_pred.cols;
@@ -1132,7 +1139,7 @@ public:
         y_true.require_non_empty("LossMeanSquaredError::backward: y_true must be non-empty");
 
         y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossMeanSquaredError::backward: shapes of y_pred and y_true must match");
+            "LossMeanSquaredError::backward: y_pred and y_true must have the same shape");
 
         const size_t samples = y_pred.rows;
         const size_t outputs = y_pred.cols;
@@ -1179,7 +1186,7 @@ public:
         y_true.require_non_empty("LossMeanAbsoluteError::backward: y_true must be non-empty");
 
         y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossMeanAbsoluteError::backward: shapes of y_pred and y_true must match");
+            "LossMeanAbsoluteError::backward: y_pred and y_true must have the same shape");
 
         const size_t samples = y_pred.rows;
         const size_t outputs = y_pred.cols;
@@ -1213,28 +1220,31 @@ public:
         y_pred.require_non_empty("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred must be non-empty");
         y_true.require_non_empty("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_true must be non-empty");
 
+        if (y_pred.cols < 2) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred.cols must be >= 2");
+        }
+
         const size_t samples = y_pred.rows;
         const size_t classes = y_pred.cols;
 
         Matrix y_true_sparse;
 
-        if(y_true.rows == 1) {
-            y_true.require_cols(samples, "ActivationSoftmaxLossCategoricalCrossEntropy::backward: sparse y_true must have shape (1, N)");
-
+        if (y_true.is_col_vector() && y_true.rows == samples) {
             y_true_sparse = y_true;
-        } else {
-            y_true.require_shape(samples, classes,
-                "ActivationSoftmaxLossCategoricalCrossEntropy::backward: one-hot y_true must match y_pred shape");
-
+        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+            y_true_sparse = y_true.transpose();
+        } else if (y_true.rows == samples && y_true.cols == classes) {
             y_true_sparse = y_true.argmax();
-
-            y_true_sparse.require_shape(1, samples,
-                "ActivationSoftmaxLossCategoricalCrossEntropy::backward: argmax(y_true) must return shape (1, N)");
+        } else {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_true must be sparse (N,1) or one-hot (N,C)");
         }
+
+        y_true_sparse.require_shape(samples, 1,
+            "ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_true_sparse must have shape (N,1)");
 
         dinputs = y_pred;
         for (size_t i = 0; i < samples; ++i) {
-            size_t class_idx = y_true_sparse.as_size_t(0, i);
+            size_t class_idx = y_true_sparse.as_size_t(i, 0);
             if (class_idx >= classes) {
                 throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: class index out of range");
             }
@@ -1584,7 +1594,6 @@ private:
     double beta2_power;
 };
 
-// data generators produce wrong shape of data (N, 1) instead of (1, N) - fix!
 // accuracy
 class Accuracy
 {
@@ -1618,34 +1627,38 @@ public:
 
     size_t compare(const Matrix& y_pred, const Matrix& y_true) override
     {
-        if(!binary) y_pred.require_rows(1, "AccuracyCategorical::compare: categorical y_pred must have shape (1, N)");
+        if(!binary) y_pred.require_cols(1, "AccuracyCategorical::compare: categorical y_pred must have shape (N,1)");
+
+        const size_t pred_rows = y_pred.rows;
+        const size_t pred_cols = y_pred.cols;
 
         Matrix ground_truth;
 
-        const size_t rows = y_pred.rows;
-        const size_t cols = y_pred.cols;
-
-        if(!binary && y_true.rows != 1) { // one-hot non-binary
-            y_true.require_rows(cols, "AccuracyCategorical::compare: one-hot y_true must have shape (y_pred.cols, C)");
-            if (y_true.cols < 2) {
-                throw runtime_error("AccuracyCategorical::compare: one-hot y_true must have at least 2 columns");
-            }
-
-            ground_truth = y_true.argmax();
-
-            ground_truth.require_shape(1, cols,
-                "AccuracyCategorical::compare: argmax(y_true) must return shape (1, N)");
-        } else { // sparse non-binary and binary
-            y_true.require_shape(rows, cols,
-                "AccuracyCategorical::compare: y_true must match y_pred shape");
+        if (binary) {
+            y_true.require_shape(pred_rows, pred_cols,
+                "AccuracyCategorical::compare: for binary accuracy y_true must match y_pred shape");
 
             ground_truth = y_true;
+        } else {
+            if (y_true.is_col_vector() && y_true.rows == pred_rows) {
+                ground_truth = y_true;
+            } else if (y_true.is_row_vector() && y_true.cols == pred_rows) {
+                ground_truth = y_true.transpose();
+            } else if (y_true.rows == pred_rows && y_true.cols >= 2) {
+                ground_truth = y_true.argmax();
+            } else {
+                throw runtime_error(
+                    "AccuracyCategorical::compare: for non-binary accuracy y_true must be sparse (N,1)/(1,N) or one-hot (N,C)");
+            }
+
+            ground_truth.require_shape(pred_rows, pred_cols,
+                "AccuracyCategorical::compare: formatted y_true must match y_pred shape");
         }
 
         size_t correct = 0;
 
-        for (size_t i = 0; i < rows; ++i) {
-            for (size_t j = 0; j < cols; ++j) {
+        for (size_t i = 0; i < pred_rows; ++i) {
+            for (size_t j = 0; j < pred_cols; ++j) {
                 if (y_pred.as_size_t(i, j) == ground_truth.as_size_t(i, j)) ++correct;
             }    
         }
@@ -1946,7 +1959,7 @@ int main()
     Matrix plot_points(X.rows, 2);
     for (size_t i = 0; i < X.rows; ++i) {
         plot_points(i, 0) = X(i, 0);
-        plot_points(i, 1) = y(0, i);
+        plot_points(i, 1) = y(i, 0);
     }
     plot_scatter_svg("plot.svg", plot_points);
 
@@ -1973,14 +1986,14 @@ int main()
     model.set(loss_function, optimizer, accuracy);
 
     cout << fixed << setprecision(5);
-    model.train(X, y.from_one_dimensional_as_column(), 10000, 100);
+    model.train(X, y, 100, 100);
 
     Matrix X_test;
     Matrix y_test;
     generate_sine_data(100, X_test, y_test);
 
     double test_loss = 0.0;
-    model.evaluate(X_test, y_test.from_one_dimensional_as_column(), test_loss);
+    model.evaluate(X_test, y_test, test_loss);
     return 0;
 }
 #endif

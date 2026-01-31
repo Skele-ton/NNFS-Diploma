@@ -8,7 +8,7 @@ APP_SRC := NNFS_Diploma.cpp
 TEST_BIN := tests
 TEST_SRC := tests.cpp
 
-GCOVR ?= gcovr
+GCOVR ?= gcovr --exclude-noncode-lines
 GCOVR_EXCLUDES := --exclude 'doctest.h'
 COVERAGE_FLAGS := -O0 -g --coverage
 
