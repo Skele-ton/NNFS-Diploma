@@ -112,7 +112,15 @@ public:
         return data[r * cols + c];
     }
 
-    // === helper methods for error checks
+    // === helper methods for shape validation
+    bool is_empty() const { return rows == 0 || cols == 0; }
+
+    bool is_row_vector() const { return rows == 1 && cols > 0; }
+
+    bool is_col_vector() const { return cols == 1 && rows > 0; }
+
+    bool is_vector() const { return is_row_vector() || is_col_vector(); }
+
     void require_non_empty(const char* error_msg) const
     {
         if (is_empty()) throw runtime_error(error_msg);
@@ -132,27 +140,7 @@ public:
     {
         if (rows != r || cols != c) throw runtime_error(error_msg);
     }
-    // ===================================
-
-    bool is_row_vector() const { return rows == 1 && cols > 0; }
-
-    bool is_col_vector() const { return cols == 1 && rows > 0; }
-
-    bool is_vector() const { return is_row_vector() || is_col_vector(); }
-
-    void scale_by_scalar(size_t value)
-    {
-        if (value == 0) {
-            throw runtime_error("Matrix::scale_by_scalar: value cannot be zero 0");
-        }
-
-        const double inv = 1.0 / static_cast<double>(value);
-        for (size_t i = 0; i < rows; ++i) {
-            for (size_t j = 0; j < cols; ++j) {
-                (*this)(i, j) *= inv;
-            }
-        }
-    }
+    // =======================================
 
     void print() const
     {
@@ -167,7 +155,19 @@ public:
         }
     }
 
-    bool is_empty() const { return rows == 0 || cols == 0; }
+    void scale_by_scalar(size_t value)
+    {
+        if (value == 0) {
+            throw runtime_error("Matrix::scale_by_scalar: value cannot be zero 0");
+        }
+
+        const double inv = 1.0 / static_cast<double>(value);
+        for (size_t i = 0; i < rows; ++i) {
+            for (size_t j = 0; j < cols; ++j) {
+                (*this)(i, j) *= inv;
+            }
+        }
+    }
 
     Matrix transpose() const
     {
@@ -205,6 +205,36 @@ public:
             result(i, 0) = static_cast<double>(biggest_j);
         }
 
+        return result;
+    }
+
+    Matrix slice_rows(size_t start, size_t end) const
+    {
+        if (end < start || end > rows) {
+            throw runtime_error("Matrix::slice_rows: invalid slice bounds");
+        }
+
+        Matrix result(end - start, cols);
+        for (size_t i = start; i < end; ++i) {
+            for (size_t j = 0; j < cols; ++j) {
+                result(i - start, j) = (*this)(i, j);
+            }
+        }
+        return result;
+    }
+
+    Matrix slice_cols(size_t start, size_t end) const
+    {
+        if (end < start || end > cols) {
+            throw runtime_error("Matrix::slice_cols: invalid slice bounds");
+        }
+
+        Matrix result(rows, end - start);
+        for (size_t i = 0; i < rows; ++i) {
+            for (size_t j = start; j < end; ++j) {
+                result(i, j - start) = (*this)(i, j);
+            }
+        }
         return result;
     }
 
@@ -889,10 +919,18 @@ class Loss
 {
 public:
     Matrix dinputs;
+    std::vector<LayerDense*> trainable_layers;
+    double accumulated_sum = 0.0;
+    size_t accumulated_count = 0;
 
     virtual ~Loss() = default;
 
-    double calculate(const Matrix& output, const Matrix& y_true) const
+    void remember_trainable_layers(const std::vector<LayerDense*>& layers)
+    {
+        trainable_layers = layers;
+    }
+
+    double calculate(const Matrix& output, const Matrix& y_true)
     {
         output.require_non_empty("Loss::calculate: output must be non-empty");
         y_true.require_non_empty("Loss::calculate: y_true must be non-empty");
@@ -902,14 +940,60 @@ public:
         sample_losses.require_shape(1, output.rows,
             "Loss::calculate: per-sample losses must be of shape (1,output.rows) after forward");
 
-        return sample_losses.scalar_mean();
+        double sum = 0.0;
+        for (double v : sample_losses.data) sum += v;
+        const double count = sample_losses.data.size();
+
+        accumulated_sum += sum;
+        accumulated_count += count;
+
+        return sum / static_cast<double>(count);
     }
 
-    static double regularization_loss(const LayerDense& layer)
+    double calculate(const Matrix& output, const Matrix& y_true, double& out_regularization_loss)
+    {
+        const double data_loss = calculate(output, y_true);
+        out_regularization_loss = regularization_loss_self();
+        return data_loss;
+    }
+
+    double calculate_accumulated() const
+    {
+        if (accumulated_count == 0) {
+            throw runtime_error("Loss::calculate_accumulated: accumulated_count must be > 0");
+        }
+        return accumulated_sum / static_cast<double>(accumulated_count);
+    }
+
+    double calculate_accumulated(double& out_regularization_loss) const
+    {
+        const double data_loss = calculate_accumulated();
+        out_regularization_loss = regularization_loss_self();
+        return data_loss;
+    }
+
+    void new_pass()
+    {
+        accumulated_sum = 0.0;
+        accumulated_count = 0;
+    }
+
+    // if no parameter is passed the method goes over the trainable layers saved in the class
+    double regularization_loss_self() const
+    {
+        double regularization = 0.0;
+        for (const LayerDense* layer : trainable_layers) {
+            if (!layer) continue;
+            regularization += regularization_loss_layer(*layer);
+        }
+        return regularization;
+    }
+
+    static double regularization_loss_layer(const LayerDense& layer)
     {
         if (layer.weight_regularizer_l1 < 0.0 || layer.weight_regularizer_l2 < 0.0 ||
             layer.bias_regularizer_l1 < 0.0 || layer.bias_regularizer_l2 < 0.0) {
-            throw runtime_error("Loss::regularization_loss: regularizer coefficients must be non-negative");
+            throw runtime_error("Loss::regularization_loss_layer: regularizer coefficients must be non-negative");
         }
 
         double regularization = 0.0;
@@ -918,7 +1002,7 @@ public:
         const bool has_w_l2 = layer.weight_regularizer_l2 != 0.0;
 
         if(has_w_l1 || has_w_l2) {
-            layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
+            layer.weights.require_non_empty("Loss::regularization_loss_layer: weights must be non-empty");
 
             double sum_abs = 0.0;
             double sum_sq  = 0.0;
@@ -935,11 +1019,11 @@ public:
         const bool has_b_l2 = layer.bias_regularizer_l2 != 0.0;
 
         if(has_b_l1 || has_b_l2) {
-            layer.biases.require_non_empty("Loss::regularization_loss: biases must be non-empty");
-            layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
+            layer.biases.require_non_empty("Loss::regularization_loss_layer: biases must be non-empty");
+            layer.weights.require_non_empty("Loss::regularization_loss_layer: weights must be non-empty");
 
             layer.biases.require_shape(1, layer.weights.cols,
-                "Loss::regularization_loss: biases must have shape (1, n_neurons)");
+                "Loss::regularization_loss_layer: biases must have shape (1, n_neurons)");
 
             double sum_abs = 0.0;
             double sum_sq  = 0.0;
@@ -1598,6 +1682,9 @@ private:
 class Accuracy
 {
 public:
+    size_t accumulated_sum = 0;
+    size_t accumulated_count = 0;
+
     virtual ~Accuracy() = default;
     virtual void init(const Matrix&) {}
     virtual void reset() {}
@@ -1607,10 +1694,27 @@ public:
         y_true.require_non_empty("Accuracy::calculate: y_true must be non-empty");
 
         multiplication_overflow_check(y_pred.rows, y_pred.cols, "Accuracy::calculate: total overflow");
-        const size_t total = y_pred.cols * y_pred.rows;
         const size_t correct = compare(y_pred, y_true);
+        const size_t total = y_pred.cols * y_pred.rows;
+        
+        accumulated_sum += correct;
+        accumulated_count += total;
 
         return static_cast<double>(correct) / static_cast<double>(total);
+    }
+
+    double calculate_accumulated() const
+    {
+        if (accumulated_count == 0) {
+            throw runtime_error("Accuracy::calculate_accumulated: accumulated_count must be > 0");
+        }
+        return accumulated_sum / static_cast<double>(accumulated_count);
+    }
+
+    void new_pass()
+    {
+        accumulated_sum = 0.0;
+        accumulated_count = 0;
     }
 
 protected:
@@ -1776,6 +1880,7 @@ public:
     bool loss_is_cce = false;
     Optimizer* optimizer = nullptr;
     Accuracy* accuracy = nullptr;
+    bool finalized = false;
 
     Matrix output;
     Matrix last_predictions;
@@ -1817,7 +1922,21 @@ public:
         loss_is_cce = (dynamic_cast<LossCategoricalCrossEntropy*>(loss) != nullptr);
     }
 
-    void train(const Matrix& X, const Matrix& y, size_t epochs, size_t print_every = 100)
+    void finalize()
+    {
+        if (!loss || !optimizer || !accuracy) {
+            throw runtime_error("Model::finalize: loss, optimizer, and accuracy must be set");
+        }
+        if (layers.empty()) {
+            throw runtime_error("Model::finalize: no layers added");
+        }
+
+        loss->remember_trainable_layers(trainable_layers);
+        finalized = true;
+    }
+
+    void train(const Matrix& X, const Matrix& y, size_t epochs = 1, size_t batch_size = 0,
+               size_t print_every = 100, const Matrix* X_val = nullptr, const Matrix* y_val = nullptr)
     {
         if (!loss || !optimizer || !accuracy) {
             throw runtime_error("Model::train: loss, optimizer, and accuracy must be set");
@@ -1829,57 +1948,102 @@ public:
         X.require_non_empty("Model::train: X must be non-empty");
         y.require_non_empty("Model::train: y must be non-empty");
 
+        if (!finalized) finalize();
+
         accuracy->init(y);
 
-        for (size_t epoch = 0; epoch <= epochs; ++epoch) {
-            optimizer->pre_update_params();
+        size_t steps = 1;
+        if (batch_size != 0) {
+            steps = X.rows / batch_size;
+            if (steps * batch_size < X.rows) ++steps;
+        }
 
-            forward_pass(X, true);
+        for (size_t epoch = 1; epoch <= epochs; ++epoch) {
+            cout << "epoch: " << epoch << '\n';
 
-            // calculating and printing loss and accuracy
-            Metrics metrics = calculate_metrics(output, y);
+            loss->new_pass();
+            accuracy->new_pass();
 
-            if (print_every != 0 && (epoch % print_every) == 0) {
-                cout << "epoch: " << epoch
-                        << ", accuracy: " << metrics.accuracy
-                        << ", loss: " << metrics.total_loss
-                        << " (data_loss: " << metrics.data_loss
-                        << ", reg_loss: " << metrics.reg_loss
-                        << ")"
-                        << ", lr: " << optimizer->current_learning_rate
-                        << '\n';
+            for (size_t step = 0; step < steps; ++step) {
+                Matrix batch_X;
+                Matrix batch_y;
+
+                if (batch_size == 0) {
+                    batch_X = X;
+                    batch_y = y;
+                } else {
+                    const size_t start = step * batch_size;
+                    const size_t end = min(start + batch_size, X.rows);
+                    batch_X = X.slice_rows(start, end);
+                    batch_y = y.slice_rows(start, end);
+                }
+
+                forward_pass(batch_X, true);
+
+                // calculating loss and accuracy
+                double reg_loss = 0.0;
+                const double data_loss = loss->calculate(output, batch_y, reg_loss);
+                const double total_loss = data_loss + reg_loss;
+
+                last_predictions = layers.back().predictions(output);
+                const double acc = accuracy->calculate(last_predictions, batch_y);
+
+                // backward pass
+                const bool use_combined = layers.back().output_is_softmax && loss_is_cce;
+                const Matrix* dvalues;
+                auto it = layers.rbegin();
+
+                if (use_combined) {
+                    combined_softmax_ce.backward(output, batch_y);
+                    dvalues = &combined_softmax_ce.dinputs;
+                    ++it;
+                } else {
+                    loss->backward(output, batch_y);
+                    dvalues = &loss->dinputs;
+                }
+
+                for (; it != layers.rend(); ++it) {
+                    it->backward(*dvalues);
+                    dvalues = &it->dinputs();
+                }
+
+                // using optimizers
+                optimizer->pre_update_params();
+                for (LayerDense* dense : trainable_layers) {
+                    optimizer->update_params(*dense);
+                }
+                optimizer->post_update_params();
+
+                // printing
+                if (print_every != 0 && ((step % print_every) == 0 || step == steps - 1)) {
+                    cout << "step: " << step
+                         << ", acc: " << acc
+                         << ", loss: " << total_loss
+                         << " (data_loss: " << data_loss
+                         << ", reg_loss: " << reg_loss
+                         << ")"
+                         << ", lr: " << optimizer->current_learning_rate
+                         << '\n';
+                }
             }
 
-            // backward pass
-            const bool use_combined = layers.back().output_is_softmax && loss_is_cce;
-            const Matrix* dvalues;
-            auto it = layers.rbegin();
+            double epoch_reg_loss = 0.0;
+            const double epoch_data_loss = loss->calculate_accumulated(epoch_reg_loss);
+            const double epoch_loss = epoch_data_loss + epoch_reg_loss;
+            const double epoch_accuracy = accuracy->calculate_accumulated();
+            cout << "training, acc: " << epoch_accuracy
+                 << ", loss: " << epoch_loss
+                 << " (data_loss: " << epoch_data_loss
+                 << ", reg_loss: " << epoch_reg_loss
+                 << ")"
+                 << ", lr: " << optimizer->current_learning_rate
+                 << '\n';
 
-            if (use_combined) {
-                combined_softmax_ce.backward(output, y);
-                dvalues = &combined_softmax_ce.dinputs;
-
-                it++;
-            } else {
-                loss->backward(output, y);
-                dvalues = &loss->dinputs;
-            }
-
-            for (; it != layers.rend(); ++it) {
-                it->backward(*dvalues);
-                dvalues = &it->dinputs();
-            }
-
-            // using optimizer
-            for (LayerDense* dense : trainable_layers) {
-                optimizer->update_params(*dense);
-            }
-
-            optimizer->post_update_params();
+            if (X_val && y_val) evaluate(*X_val, *y_val, batch_size, false);
         }
     }
 
-    double evaluate(const Matrix& X, const Matrix& y, double& out_loss)
+    void  evaluate(const Matrix& X, const Matrix& y, size_t batch_size = 0, bool reinit = true)
     {
         if (!loss || !accuracy) {
             throw runtime_error("Model::evaluate: loss, and accuracy must be set");
@@ -1891,31 +2055,48 @@ public:
         X.require_non_empty("Model::evaluate: X must be non-empty");
         y.require_non_empty("Model::evaluate: y must be non-empty");
 
-        accuracy->init(y);
+        if (!finalized) finalize();
 
-        forward_pass(X, false);
+        if (reinit) accuracy->init(y);
+        loss->new_pass();
+        accuracy->new_pass();
 
-        Metrics metrics = calculate_metrics(output, y);
+        size_t steps = 1;
+        if (batch_size != 0) {
+            steps = X.rows / batch_size;
+            if (steps * batch_size < X.rows) ++steps;
+        }
 
-        out_loss = metrics.data_loss;
+        for (size_t step = 0; step < steps; ++step) {
+            Matrix batch_X;
+            Matrix batch_y;
 
-        cout << "validation, accuracy: " << metrics.accuracy
-         << ", loss: " << out_loss
-         << '\n';
+            if (batch_size == 0) {
+                batch_X = X;
+                batch_y = y;
+            } else {
+                const size_t start = step * batch_size;
+                const size_t end = min(start + batch_size, X.rows);
+                batch_X = X.slice_rows(start, end);
+                batch_y = y.slice_rows(start, end);
+            }
 
-        return metrics.accuracy;
+            forward_pass(batch_X, false);
+            loss->calculate(output, batch_y);
+            last_predictions = layers.back().predictions(output);
+            accuracy->calculate(last_predictions, batch_y);
+        }
+
+        const double val_loss = loss->calculate_accumulated();
+        const double val_acc = accuracy->calculate_accumulated();
+
+        cout << "validation, accuracy: " << val_acc
+             << ", loss: " << val_loss
+             << '\n';
     }
 
 private:
     ActivationSoftmaxLossCategoricalCrossEntropy combined_softmax_ce;
-
-    struct Metrics
-    {
-        double data_loss = 0.0;
-        double reg_loss = 0.0;
-        double total_loss = 0.0;
-        double accuracy = 0.0;
-    };
 
     void forward_pass(const Matrix& X, const bool training)
     {
@@ -1929,24 +2110,6 @@ private:
 
         output = *current;
     }
-
-    Metrics calculate_metrics(const Matrix& output, const Matrix& y) {
-        Metrics m;
-
-        m.data_loss = loss->calculate(output, y);
-
-        m.reg_loss = 0.0;
-        for (LayerDense* dense : trainable_layers) {
-            m.reg_loss += Loss::regularization_loss(*dense);
-        }
-
-        m.total_loss = m.data_loss + m.reg_loss;
-
-        last_predictions = layers.back().predictions(output);
-        m.accuracy = accuracy->calculate(last_predictions, y);
-
-        return m;
-    }
 };
 
 #ifndef NNFS_NO_MAIN
@@ -1954,27 +2117,22 @@ int main()
 {
     Matrix X;
     Matrix y;
-    generate_sine_data(1000, X, y);
+    generate_spiral_data(100, 3, X, y);
 
-    Matrix plot_points(X.rows, 2);
-    for (size_t i = 0; i < X.rows; ++i) {
-        plot_points(i, 0) = X(i, 0);
-        plot_points(i, 1) = y(i, 0);
-    }
-    plot_scatter_svg("plot.svg", plot_points);
+    plot_scatter_svg("plot.svg", X, y);
 
-    LayerDense dense1(1, 64, 0.0, 5e-4, 0.0, 5e-4);
+    LayerDense dense1(2, 64, 0.0, 5e-4, 0.0, 5e-4);
     ActivationReLU activation1;
 
     LayerDense dense2(64, 64, 0.0, 5e-4, 0.0, 5e-4);
     ActivationReLU activation2;
 
-    LayerDense dense3(64, 1);
-    ActivationLinear activation3;
+    LayerDense dense3(64, 3);
+    ActivationSoftmax activation3;
 
-    LossMeanSquaredError loss_function;
+    LossCategoricalCrossEntropy loss_function;
     OptimizerAdam optimizer(0.005, 1e-3);
-    AccuracyRegression accuracy(75.0);
+    AccuracyCategorical accuracy;
 
     Model model;
     model.add(dense1);
@@ -1984,16 +2142,14 @@ int main()
     model.add(dense3);
     model.add(activation3);
     model.set(loss_function, optimizer, accuracy);
+    model.finalize();
 
-    cout << fixed << setprecision(5);
-    model.train(X, y, 100, 100);
+    model.train(X, y, 100, 32, 10);
 
     Matrix X_test;
     Matrix y_test;
-    generate_sine_data(100, X_test, y_test);
-
-    double test_loss = 0.0;
-    model.evaluate(X_test, y_test, test_loss);
+    generate_spiral_data(50, 3, X_test, y_test);
+    model.evaluate(X_test, y_test, 32);
     return 0;
 }
 #endif

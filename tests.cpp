@@ -92,6 +92,26 @@ TEST_CASE("Matrix operator() throws on out-of-bounds access")
                          runtime_error);
 }
 
+TEST_CASE("Matrix check helpers detect empty matrices and row/column vectors")
+{
+    Matrix empty;
+    CHECK(empty.is_empty());
+
+    Matrix row(1, 3, 0.0);
+    CHECK_FALSE(row.is_empty());
+    CHECK(row.is_row_vector());
+    CHECK_FALSE(row.is_col_vector());
+    CHECK(row.is_vector());
+
+    Matrix col(3, 1, 0.0);
+    CHECK(col.is_col_vector());
+    CHECK_FALSE(col.is_row_vector());
+    CHECK(col.is_vector());
+
+    Matrix box(2, 2, 0.0);
+    CHECK_FALSE(box.is_vector());
+}
+
 TEST_CASE("Matrix require_* helpers validate shape and emptiness")
 {
     Matrix empty;
@@ -112,21 +132,18 @@ TEST_CASE("Matrix require_* helpers validate shape and emptiness")
                          runtime_error);
 }
 
-TEST_CASE("Matrix vector helpers detect row/column vectors")
+TEST_CASE("Matrix print writes expected output")
 {
-    Matrix row(1, 3, 0.0);
-    Matrix col(3, 1, 0.0);
-    Matrix box(2, 2, 0.0);
+    std::ostringstream oss;
+    auto* old_buf = cout.rdbuf(oss.rdbuf());
 
-    CHECK(row.is_row_vector());
-    CHECK_FALSE(row.is_col_vector());
-    CHECK(row.is_vector());
+    Matrix m(2, 2);
+    m(0, 0) = 1.0; m(0, 1) = 2.0;
+    m(1, 0) = 3.0; m(1, 1) = 4.5;
+    m.print();
 
-    CHECK(col.is_col_vector());
-    CHECK_FALSE(col.is_row_vector());
-    CHECK(col.is_vector());
-
-    CHECK_FALSE(box.is_vector());
+    cout.rdbuf(old_buf);
+    CHECK(oss.str() == "1 2\n3 4.5\n");
 }
 
 TEST_CASE("Matrix scale_by_scalar scales values and rejects a value of zero")
@@ -142,20 +159,6 @@ TEST_CASE("Matrix scale_by_scalar scales values and rejects a value of zero")
     CHECK_THROWS_WITH_AS(bad.scale_by_scalar(0),
                          "Matrix::scale_by_scalar: value cannot be zero 0",
                          runtime_error);
-}
-
-TEST_CASE("Matrix print writes expected output")
-{
-    std::ostringstream oss;
-    auto* old_buf = cout.rdbuf(oss.rdbuf());
-
-    Matrix m(2, 2);
-    m(0, 0) = 1.0; m(0, 1) = 2.0;
-    m(1, 0) = 3.0; m(1, 1) = 4.5;
-    m.print();
-
-    cout.rdbuf(old_buf);
-    CHECK(oss.str() == "1 2\n3 4.5\n");
 }
 
 TEST_CASE("Matrix transpose and argmax handle empty and non-empty cases")
@@ -179,6 +182,42 @@ TEST_CASE("Matrix transpose and argmax handle empty and non-empty cases")
     CHECK(arg.cols == 1);
     CHECK(arg(0, 0) == doctest::Approx(2.0));
     CHECK(arg(1, 0) == doctest::Approx(1.0));
+}
+
+TEST_CASE("Matrix slice_rows and slice_cols work and validate bounds")
+{
+    Matrix m(3, 4);
+    double v = 1.0;
+    for (size_t i = 0; i < m.rows; ++i) {
+        for (size_t j = 0; j < m.cols; ++j) {
+            m(i, j) = v++;
+        }
+    }
+
+    Matrix rows = m.slice_rows(1, 3);
+    CHECK(rows.rows == 2);
+    CHECK(rows.cols == 4);
+    CHECK(rows(0, 0) == doctest::Approx(m(1, 0)));
+    CHECK(rows(1, 3) == doctest::Approx(m(2, 3)));
+
+    Matrix cols = m.slice_cols(1, 3);
+    CHECK(cols.rows == 3);
+    CHECK(cols.cols == 2);
+    CHECK(cols(0, 0) == doctest::Approx(m(0, 1)));
+    CHECK(cols(2, 1) == doctest::Approx(m(2, 2)));
+
+    CHECK_THROWS_WITH_AS(m.slice_rows(2, 1),
+                         "Matrix::slice_rows: invalid slice bounds",
+                         runtime_error);
+    CHECK_THROWS_WITH_AS(m.slice_rows(0, 4),
+                         "Matrix::slice_rows: invalid slice bounds",
+                         runtime_error);
+    CHECK_THROWS_WITH_AS(m.slice_cols(2, 1),
+                         "Matrix::slice_cols: invalid slice bounds",
+                         runtime_error);
+    CHECK_THROWS_WITH_AS(m.slice_cols(0, 5),
+                         "Matrix::slice_cols: invalid slice bounds",
+                         runtime_error);
 }
 
 TEST_CASE("Matrix as_size_t validates integer-like values")
@@ -939,32 +978,66 @@ TEST_CASE("Loss::calculate validates non-empty inputs")
     loss.backward(output, y);
 }
 
-TEST_CASE("Loss::regularization_loss validates and computes sums")
+TEST_CASE("Loss accumulated calculations and new_pass")
+{
+    struct DummyLoss : Loss {
+        Matrix forward(const Matrix& output, const Matrix&) const override
+        {
+            Matrix losses(1, output.rows, 2.0);
+            return losses;
+        }
+        void backward(const Matrix&, const Matrix&) override {}
+    } loss;
+
+    Matrix out(2, 1, 0.0);
+    Matrix y(2, 1, 0.0);
+
+    CHECK_THROWS_WITH_AS(loss.calculate_accumulated(),
+                         "Loss::calculate_accumulated: accumulated_count must be > 0",
+                         runtime_error);
+
+    double reg = 0.0;
+    CHECK(loss.calculate(out, y) == doctest::Approx(2.0));
+    loss.backward(out, y);
+    CHECK(loss.calculate(out, y, reg) == doctest::Approx(2.0));
+    CHECK(reg == doctest::Approx(0.0));
+
+    double reg_accum = 0.0;
+    CHECK(loss.calculate_accumulated(reg_accum) == doctest::Approx(2.0));
+    CHECK(reg_accum == doctest::Approx(0.0));
+
+    loss.new_pass();
+    CHECK_THROWS_WITH_AS(loss.calculate_accumulated(),
+                         "Loss::calculate_accumulated: accumulated_count must be > 0",
+                         runtime_error);
+}
+
+TEST_CASE("Loss::regularization_loss_layer validates and computes sums")
 {
     LayerDense layer(2, 2, 0.3, 0.7, 0.5, 0.9);
     layer.weights(0, 0) = 1.0;  layer.weights(0, 1) = -2.0;
     layer.weights(1, 0) = -3.0; layer.weights(1, 1) = 4.0;
     layer.biases(0, 0) = 3.0; layer.biases(0, 1) = -4.0;
 
-    const double reg = Loss::regularization_loss(layer);
+    const double reg = Loss::regularization_loss_layer(layer);
     CHECK(reg == doctest::Approx(50.0));
 
     LayerDense bad(1, 1);
     bad.weight_regularizer_l1 = -0.1;
-    CHECK_THROWS_WITH_AS(Loss::regularization_loss(bad),
-                         "Loss::regularization_loss: regularizer coefficients must be non-negative",
+    CHECK_THROWS_WITH_AS(Loss::regularization_loss_layer(bad),
+                         "Loss::regularization_loss_layer: regularizer coefficients must be non-negative",
                          runtime_error);
 
     LayerDense no_weights(1, 1, 0.1, 0.0, 0.0, 0.0);
     no_weights.weights.assign(0, 0);
-    CHECK_THROWS_WITH_AS(Loss::regularization_loss(no_weights),
-                         "Loss::regularization_loss: weights must be non-empty",
+    CHECK_THROWS_WITH_AS(Loss::regularization_loss_layer(no_weights),
+                         "Loss::regularization_loss_layer: weights must be non-empty",
                          runtime_error);
 
     LayerDense bad_bias_shape(2, 2, 0.0, 0.0, 0.1, 0.0);
     bad_bias_shape.biases.assign(1, 1);
-    CHECK_THROWS_WITH_AS(Loss::regularization_loss(bad_bias_shape),
-                         "Loss::regularization_loss: biases must have shape (1, n_neurons)",
+    CHECK_THROWS_WITH_AS(Loss::regularization_loss_layer(bad_bias_shape),
+                         "Loss::regularization_loss_layer: biases must have shape (1, n_neurons)",
                          runtime_error);
 }
 
@@ -1573,6 +1646,29 @@ TEST_CASE("Accuracy base init/reset default implementations run")
     acc.reset();
 }
 
+TEST_CASE("Accuracy accumulated calculations and new_pass")
+{
+    AccuracyCategorical acc;
+    Matrix preds(2, 1);
+    preds(0, 0) = 0.0;
+    preds(1, 0) = 1.0;
+    Matrix y(2, 1);
+    y(0, 0) = 0.0;
+    y(1, 0) = 0.0;
+
+    CHECK_THROWS_WITH_AS(acc.calculate_accumulated(),
+                         "Accuracy::calculate_accumulated: accumulated_count must be > 0",
+                         runtime_error);
+
+    CHECK(acc.calculate(preds, y) == doctest::Approx(0.5));
+    CHECK(acc.calculate_accumulated() == doctest::Approx(0.5));
+
+    acc.new_pass();
+    CHECK_THROWS_WITH_AS(acc.calculate_accumulated(),
+                         "Accuracy::calculate_accumulated: accumulated_count must be > 0",
+                         runtime_error);
+}
+
 TEST_CASE("AccuracyCategorical computes accuracy for sparse and one-hot labels")
 {
     AccuracyCategorical acc;
@@ -1719,6 +1815,35 @@ TEST_CASE("Model add and set configure layers and trainables")
     model.set(loss, opt, acc);
 }
 
+TEST_CASE("Model finalize validates setup and sets trainable layers")
+{
+    Model model;
+    CHECK_THROWS_WITH_AS(model.finalize(),
+                         "Model::finalize: loss, optimizer, and accuracy must be set",
+                         runtime_error);
+
+    LayerDense dense(2, 2);
+    model.add(dense);
+    CHECK_THROWS_WITH_AS(model.finalize(),
+                         "Model::finalize: loss, optimizer, and accuracy must be set",
+                         runtime_error);
+
+    LossMeanSquaredError loss;
+    OptimizerSGD opt(0.1, 0.0, 0.0);
+    AccuracyRegression acc;
+    {
+        Model no_layers;
+        no_layers.set(loss, opt, acc);
+        CHECK_THROWS_WITH_AS(no_layers.finalize(),
+                             "Model::finalize: no layers added",
+                             runtime_error);
+    }
+
+    model.set(loss, opt, acc);
+    model.finalize();
+    CHECK(model.trainable_layers.size() == 1);
+}
+
 TEST_CASE("Model train validates setup and data")
 {
     Model model;
@@ -1774,7 +1899,7 @@ TEST_CASE("Model train uses separate loss backward path")
     model.add(linear);
     model.set(loss, opt, acc);
 
-    model.train(X, y, 0, 0);
+    model.train(X, y, 1, 0, 0);
     CHECK(model.output.rows == 2);
     CHECK(model.output.cols == 1);
 }
@@ -1801,7 +1926,7 @@ TEST_CASE("Model train uses combined softmax + CCE path")
     model.add(softmax);
     model.set(loss, opt, acc);
 
-    model.train(X, y, 0, 0);
+    model.train(X, y, 1, 0, 0);
     CHECK(model.output.rows == 2);
     CHECK(model.output.cols == 2);
 }
@@ -1828,9 +1953,40 @@ TEST_CASE("Model train prints when print_every is non-zero")
 
     std::ostringstream oss;
     auto* old_buf = cout.rdbuf(oss.rdbuf());
-    model.train(X, y, 0, 1);
+    model.train(X, y, 1, 0, 1);
     cout.rdbuf(old_buf);
-    CHECK(oss.str().find("epoch: 0") != std::string::npos);
+    const std::string out = oss.str();
+    CHECK(out.find("epoch: 1") != std::string::npos);
+    CHECK(out.find("step:") != std::string::npos);
+}
+
+TEST_CASE("Model train uses batch slicing when batch_size > 0")
+{
+    Matrix X(3, 2);
+    X(0, 0) = 1.0; X(0, 1) = 0.0;
+    X(1, 0) = 0.0; X(1, 1) = 1.0;
+    X(2, 0) = 1.0; X(2, 1) = 1.0;
+
+    Matrix y(3, 1);
+    y(0, 0) = 0.0;
+    y(1, 0) = 1.0;
+    y(2, 0) = 0.0;
+
+    LayerDense dense(2, 2);
+    ActivationSoftmax softmax;
+
+    LossCategoricalCrossEntropy loss;
+    OptimizerSGD opt(0.1, 0.0, 0.0);
+    AccuracyCategorical acc;
+
+    Model model;
+    model.add(dense);
+    model.add(softmax);
+    model.set(loss, opt, acc);
+
+    model.train(X, y, 1, 2, 0);
+    CHECK(model.output.rows == 1);
+    CHECK(model.output.cols == 2);
 }
 
 TEST_CASE("Model evaluate validates setup and runs")
@@ -1843,13 +1999,12 @@ TEST_CASE("Model evaluate validates setup and runs")
     OptimizerSGD opt(0.1, 0.0, 0.0);
     AccuracyRegression acc;
 
-    double out_loss = 0.0;
-    CHECK_THROWS_WITH_AS(model.evaluate(X, y, out_loss),
+    CHECK_THROWS_WITH_AS(model.evaluate(X, y),
                          "Model::evaluate: loss, and accuracy must be set",
                          runtime_error);
 
     model.set(loss, opt, acc);
-    CHECK_THROWS_WITH_AS(model.evaluate(X, y, out_loss),
+    CHECK_THROWS_WITH_AS(model.evaluate(X, y),
                          "Model::evaluate: no layers added",
                          runtime_error);
 
@@ -1859,15 +2014,39 @@ TEST_CASE("Model evaluate validates setup and runs")
     model.add(linear);
 
     Matrix empty;
-    CHECK_THROWS_WITH_AS(model.evaluate(empty, y, out_loss),
+    CHECK_THROWS_WITH_AS(model.evaluate(empty, y),
                          "Model::evaluate: X must be non-empty",
                          runtime_error);
-    CHECK_THROWS_WITH_AS(model.evaluate(X, empty, out_loss),
+    CHECK_THROWS_WITH_AS(model.evaluate(X, empty),
                          "Model::evaluate: y must be non-empty",
                          runtime_error);
 
-    double acc_value = model.evaluate(X, y, out_loss);
-    CHECK(isfinite(out_loss));
-    CHECK(acc_value >= 0.0);
-    CHECK(acc_value <= 1.0);
+    model.evaluate(X, y);
+}
+
+TEST_CASE("Model evaluate uses batch slicing when batch_size > 0")
+{
+    Matrix X(3, 1);
+    X(0, 0) = 0.0;
+    X(1, 0) = 1.0;
+    X(2, 0) = 2.0;
+
+    Matrix y(3, 1);
+    y(0, 0) = 0.0;
+    y(1, 0) = 1.0;
+    y(2, 0) = 0.0;
+
+    LayerDense dense(1, 1);
+    ActivationLinear linear;
+
+    LossMeanSquaredError loss;
+    OptimizerSGD opt(0.1, 0.0, 0.0);
+    AccuracyRegression acc;
+
+    Model model;
+    model.add(dense);
+    model.add(linear);
+    model.set(loss, opt, acc);
+
+    model.evaluate(X, y, 2, false);
 }
