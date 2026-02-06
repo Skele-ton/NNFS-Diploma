@@ -13,7 +13,7 @@
 // === helpers ===
 static LayerDense make_dense_with_grads(double w, double b, double dw, double db)
 {
-    LayerDense layer(1, 1);
+    LayerDense layer(1, "linear");
     layer.weights(0, 0) = w;
     layer.biases(0, 0) = b;
     layer.dweights.assign(1, 1);

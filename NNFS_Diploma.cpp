@@ -6,12 +6,14 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <cctype>
 #include <fstream>
 #include <algorithm>
 
 #include "fashion_mnist/mnist_reader.hpp"
 
 using std::cout;
+using std::vector;
 using std::ofstream;
 using std::runtime_error;
 using std::size_t;
@@ -20,6 +22,7 @@ using std::numeric_limits;
 using std::mt19937;
 using std::normal_distribution;
 using std::uniform_real_distribution;
+using std::uniform_int_distribution;
 using std::fixed;
 using std::setprecision;
 using std::swap;
@@ -34,6 +37,8 @@ using std::acos;
 using std::exp;
 using std::log;
 using std::isfinite;
+using std::transform;
+using std::tolower;
 
 inline bool is_whole_number(double v, double epsilon = 1e-7)
 {
@@ -46,10 +51,10 @@ inline void multiplication_overflow_check(const size_t a, const size_t b, const 
     }
 }
 
-// TODO: make varaibles for classes private and add getters/setters where needed
 // TODO: standardize the labels of the data plotting somehow (make the middle equal 0 or something similar)
 // TODO: Make rng implementation thread-safe
 // TODO: add predict method to the model class
+// TODO: make varaibles for classes private and add getters/setters where needed
 // TODO: add get_params, set_params, save_params, load_params, save, load methods to the model class
 //       maybe find a cpp library for reading/writing objects to files
 // TODO: seperate project into multiple files
@@ -79,7 +84,7 @@ class Matrix
 public:
     size_t rows;
     size_t cols;
-    std::vector<double> data;
+    vector<double> data;
 
     Matrix() : rows(0), cols(0), data() {}
 
@@ -310,7 +315,7 @@ public:
         if (rows < 2) return;
 
         for (size_t i = rows - 1; i > 0; --i) {
-            std::uniform_int_distribution<size_t> dist(0, i);
+            uniform_int_distribution<size_t> dist(0, i);
             const size_t j = dist(g_rng);
             if (i == j) continue;
 
@@ -333,7 +338,7 @@ void fashion_mnist_create(
     Matrix& X_test_out,  Matrix& y_test_out,
     const string& dir = "fashion_mnist")
 {
-    auto dataset = mnist::read_dataset<std::vector, std::vector, uint8_t, uint8_t>(dir);
+    auto dataset = mnist::read_dataset<vector, vector, uint8_t, uint8_t>(dir);
 
     const size_t train_samples = dataset.training_images.size();
     const size_t test_samples  = dataset.test_images.size();
@@ -792,12 +797,15 @@ public:
     virtual void backward(const Matrix& dvalues, bool include_activation = true) = 0;
 };
 
-// dense layer with weights/biases and cached inputs/output
+// dense layer with weights, biases and an activation function
 class LayerDense : public Layer
 {
 public:
     Matrix weights;
     Matrix biases;
+
+    Matrix dweights;
+    Matrix dbiases;
 
     double weight_regularizer_l1;
     double weight_regularizer_l2;
@@ -809,45 +817,67 @@ public:
     Matrix weight_cache;
     Matrix bias_cache;
 
-    Matrix dweights;
-    Matrix dbiases;
-
-    LayerDense(size_t n_inputs, size_t n_neurons, Activation& activation_fn,
+    LayerDense(size_t n_neurons, const string& activation_name,
                double weight_regularizer_l1 = 0.0,
                double weight_regularizer_l2 = 0.0,
                double bias_regularizer_l1 = 0.0,
                double bias_regularizer_l2 = 0.0)
-        : weights(n_inputs, n_neurons),
-          biases(1, n_neurons, 0.0),
-          weight_regularizer_l1(weight_regularizer_l1),
-          weight_regularizer_l2(weight_regularizer_l2),
-          bias_regularizer_l1(bias_regularizer_l1),
-          bias_regularizer_l2(bias_regularizer_l2)
+        : weights(),
+        biases(1, n_neurons, 0.0),
+        weight_regularizer_l1(weight_regularizer_l1),
+        weight_regularizer_l2(weight_regularizer_l2),
+        bias_regularizer_l1(bias_regularizer_l1),
+        bias_regularizer_l2(bias_regularizer_l2),
+        inputs_init(false),
+        pending_n_neurons(n_neurons)
     {
         if (weight_regularizer_l1 < 0.0 || weight_regularizer_l2 < 0.0 ||
             bias_regularizer_l1 < 0.0 || bias_regularizer_l2 < 0.0) {
             throw runtime_error("LayerDense: regularizers must be non-negative");
         }
-
-        if(n_inputs == 0 || n_neurons == 0) {
-            throw runtime_error("LayerDense:  n_inputs and n_neurons must be > 0");
+        if (n_neurons == 0) {
+            throw runtime_error("LayerDense: n_neurons must be > 0");
         }
 
-        activation = &activation_fn;
+        string name = activation_name;
+        transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return static_cast<char>(tolower(c)); });
 
-        for (size_t input = 0; input < n_inputs; ++input) {
-            for (size_t neuron = 0; neuron < n_neurons; ++neuron) {
-                weights(input, neuron) = 0.1 * random_gaussian();
-            }
+        if (name == "relu") {
+            activation = &activation_relu;
+        } else if (name == "softmax") {
+            activation = &activation_softmax;
+        } else if (name == "sigmoid") {
+            activation = &activation_sigmoid;
+        } else if (name == "linear") {
+            activation = &activation_linear;
+        } else {
+            throw runtime_error("LayerDense: unknown activation. use relu, softmax, sigmoid or linear");
         }
     }
 
-    void forward(const Matrix& inputs_batch)
+    void forward(const Matrix& inputs_batch, bool) override
     {
         inputs = inputs_batch;
 
-        weights.require_non_empty("LayerDense::forward: weights must be initialized");
         inputs.require_non_empty("LayerDense::forward: inputs must be non-empty");
+
+        if (weights.is_empty()) {
+            if (inputs_init) {
+                throw runtime_error("LayerDense::forward: weights must not be empty after initialization");
+            }
+
+            size_t n_inputs = inputs.cols;
+
+            weights.assign(n_inputs, pending_n_neurons);
+            for (size_t input = 0; input < n_inputs; ++input) {
+                for (size_t neuron = 0; neuron < pending_n_neurons; ++neuron) {
+                    weights(input, neuron) = 0.1 * random_gaussian();
+                }
+            }
+
+            inputs_init = true;
+        }
 
         inputs.require_cols(weights.rows, "LayerDense::forward: inputs.cols must match weights.rows");
         biases.require_shape(1, weights.cols,
@@ -866,12 +896,12 @@ public:
         activation->forward(output);
         output = activation->output;
     }
-    
-    // forward overload for dropout layer
-    void forward(const Matrix& inputs_batch, bool) override { forward(inputs_batch); }
 
     void backward(const Matrix& dvalues, bool include_activation) override
     {
+        inputs.require_non_empty("LayerDense::backward: inputs must be non-empty (forward not called?)");
+        weights.require_non_empty("LayerDense::backward: weights must be initialized (forward not called?)");
+
         dvalues.require_non_empty("LayerDense::backward: dvalues must be non-empty");
         dvalues.require_shape(inputs.rows, weights.cols,
             "LayerDense::backward: dvalues shape mismatch");
@@ -931,21 +961,26 @@ public:
         const Matrix weights_T = weights.transpose();
         dinputs = Matrix::dot(dactivation, weights_T);
     }
+
+private:
+    ActivationReLU activation_relu;
+    ActivationSoftmax activation_softmax;
+    ActivationSigmoid activation_sigmoid;
+    ActivationLinear activation_linear;
+
+    bool inputs_init;
+    size_t pending_n_neurons;
 };
 
 // dropout layer
 class LayerDropout : public Layer
 {
 public:
-    double keep_rate;
-    Matrix scaled_binary_mask;
-    ActivationLinear activation_linear;
-
-    explicit LayerDropout(double rate)
-        : keep_rate(1.0 - rate)
+    explicit LayerDropout(double dropout_rate)
+        : keep_rate(1.0 - dropout_rate)
     {
         if (keep_rate <= 0.0 || keep_rate > 1.0) {
-            throw runtime_error("LayerDropout: rate must be in (0,1]");
+            throw runtime_error("LayerDropout: dropout_rate must be in (0,1]");
         }
 
         activation = &activation_linear;
@@ -975,22 +1010,18 @@ public:
         output = activation->output;
     }
 
-    void backward(const Matrix& dvalues, bool include_activation) override
+    void backward(const Matrix& dvalues, bool) override
     {
         dvalues.require_non_empty("LayerDropout::backward: dvalues must be non-empty");
         dvalues.require_shape(scaled_binary_mask.rows, scaled_binary_mask.cols,
             "LayerDropout::backward: dvalues shape mismatch");
 
         Matrix dactivation;
-        if (include_activation) {
-            if (!activation) {
-                throw runtime_error("LayerDropout::backward: activation must be set");
-            }
-            activation->backward(dvalues);
-            dactivation = activation->dinputs;
-        } else {
-            dactivation = dvalues;
+        if (!activation) {
+            throw runtime_error("LayerDropout::backward: activation must be set");
         }
+        activation->backward(dvalues);
+        dactivation = activation->dinputs;
 
         dinputs.assign(dactivation.rows, dactivation.cols);
         for (size_t i = 0; i < dactivation.rows; ++i) {
@@ -999,6 +1030,11 @@ public:
             }
         }
     }
+
+private:
+    double keep_rate;
+    Matrix scaled_binary_mask;
+    ActivationLinear activation_linear;
 };
 
 // input "layer" for storing inputs into the model. Doesn't inherit from the base layer class
@@ -1019,16 +1055,8 @@ class Loss
 {
 public:
     Matrix dinputs;
-    std::vector<LayerDense*> trainable_layers;
-    double accumulated_sum = 0.0;
-    size_t accumulated_count = 0;
 
     virtual ~Loss() = default;
-
-    void remember_trainable_layers(const std::vector<LayerDense*>& layers)
-    {
-        trainable_layers = layers;
-    }
 
     double calculate(const Matrix& output, const Matrix& y_true)
     {
@@ -1050,10 +1078,11 @@ public:
         return sum / static_cast<double>(count);
     }
 
-    double calculate(const Matrix& output, const Matrix& y_true, double& out_regularization_loss)
+    double calculate(const Matrix& output, const Matrix& y_true, double& out_regularization_loss,
+                     const vector<LayerDense*>& layers)
     {
         const double data_loss = calculate(output, y_true);
-        out_regularization_loss = regularization_loss_self();
+        out_regularization_loss = regularization_loss(layers);
         return data_loss;
     }
 
@@ -1065,10 +1094,10 @@ public:
         return accumulated_sum / static_cast<double>(accumulated_count);
     }
 
-    double calculate_accumulated(double& out_regularization_loss) const
+    double calculate_accumulated(double& out_regularization_loss, const vector<LayerDense*>& layers) const
     {
         const double data_loss = calculate_accumulated();
-        out_regularization_loss = regularization_loss_self();
+        out_regularization_loss = regularization_loss(layers);
         return data_loss;
     }
 
@@ -1078,21 +1107,28 @@ public:
         accumulated_count = 0;
     }
 
-    double regularization_loss_self() const
+    virtual void backward(const Matrix& y_pred, const Matrix& y_true) = 0;
+
+protected:
+    virtual Matrix forward(const Matrix& output, const Matrix& y_true) const = 0;
+
+    static double clamp(double p)
     {
-        double regularization = 0.0;
-        for (const LayerDense* layer : trainable_layers) {
-            if (!layer) continue;
-            regularization += regularization_loss_layer(*layer);
-        }
-        return regularization;
+        constexpr double eps = 1e-7;
+        if (p < eps) return eps;
+        if (p > 1.0 - eps) return 1.0 - eps;
+        return p;
     }
 
-    static double regularization_loss_layer(const LayerDense& layer)
+private:
+    double accumulated_sum = 0.0;
+    size_t accumulated_count = 0;
+
+    static double regularization_loss(const LayerDense& layer)
     {
         if (layer.weight_regularizer_l1 < 0.0 || layer.weight_regularizer_l2 < 0.0 ||
             layer.bias_regularizer_l1 < 0.0 || layer.bias_regularizer_l2 < 0.0) {
-            throw runtime_error("Loss::regularization_loss_layer: regularizer coefficients must be non-negative");
+            throw runtime_error("Loss::regularization_loss: regularizer coefficients must be non-negative");
         }
 
         double regularization = 0.0;
@@ -1101,7 +1137,7 @@ public:
         const bool has_w_l2 = layer.weight_regularizer_l2 != 0.0;
 
         if(has_w_l1 || has_w_l2) {
-            layer.weights.require_non_empty("Loss::regularization_loss_layer: weights must be non-empty");
+            layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
 
             double sum_abs = 0.0;
             double sum_sq  = 0.0;
@@ -1118,11 +1154,11 @@ public:
         const bool has_b_l2 = layer.bias_regularizer_l2 != 0.0;
 
         if(has_b_l1 || has_b_l2) {
-            layer.biases.require_non_empty("Loss::regularization_loss_layer: biases must be non-empty");
-            layer.weights.require_non_empty("Loss::regularization_loss_layer: weights must be non-empty");
+            layer.biases.require_non_empty("Loss::regularization_loss: biases must be non-empty");
+            layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
 
             layer.biases.require_shape(1, layer.weights.cols,
-                "Loss::regularization_loss_layer: biases must have shape (1, n_neurons)");
+                "Loss::regularization_loss: biases must have shape (1, n_neurons)");
 
             double sum_abs = 0.0;
             double sum_sq  = 0.0;
@@ -1138,63 +1174,20 @@ public:
         return regularization;
     }
 
-    virtual void backward(const Matrix& y_pred, const Matrix& y_true) = 0;
-
-protected:
-    virtual Matrix forward(const Matrix& output, const Matrix& y_true) const = 0;
-
-    static double clamp(double p)
+    static double regularization_loss(const vector<LayerDense*>& layers)
     {
-        constexpr double eps = 1e-7;
-        if (p < eps) return eps;
-        if (p > 1.0 - eps) return 1.0 - eps;
-        return p;
+        double regularization = 0.0;
+        for (const LayerDense* layer : layers) {
+            if (!layer) continue;
+            regularization += regularization_loss(*layer);
+        }
+        return regularization;
     }
 };
 
 class LossCategoricalCrossEntropy : public Loss
 {
 public:
-    Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
-    {
-        if (y_pred.cols < 2) {
-            throw runtime_error("LossCategoricalCrossEntropy::forward: y_pred.cols must be >= 2");
-        }
-
-        const size_t samples = y_pred.rows;
-        const size_t classes = y_pred.cols;
-
-        Matrix sample_losses(1, samples, 0.0);
-
-        Matrix y_true_sparse;
-
-        if (y_true.is_col_vector() && y_true.rows == samples) {
-            y_true_sparse = y_true;
-        } else if (y_true.is_row_vector() && y_true.cols == samples) {
-            y_true_sparse = y_true.transpose();
-        } else if (y_true.rows == samples && y_true.cols == classes) {
-            y_true_sparse = y_true.argmax();
-        } else {
-            throw runtime_error("LossCategoricalCrossEntropy::forward: y_true must be sparse (N,1) or one-hot (N,C)");
-        }
-
-        y_true_sparse.require_shape(samples, 1,
-            "LossCategoricalCrossEntropy::forward: y_true_sparse must have shape (N,1)");
-
-        for (size_t i = 0; i < samples; ++i) {
-            const size_t class_idx = y_true_sparse.as_size_t(i, 0);
-
-            if (class_idx >= classes) {
-                throw runtime_error("LossCategoricalCrossEntropy::forward: y_true class index out of range");
-            }
-
-            double confidence = clamp(y_pred(i, class_idx));
-            sample_losses(0, i) = -log(confidence);
-        }
-
-        return sample_losses;
-    }
-
     void backward(const Matrix& y_pred, const Matrix& y_true) override
     {
         y_pred.require_non_empty("LossCategoricalCrossEntropy::backward: y_pred must be non-empty");
@@ -1235,36 +1228,52 @@ public:
 
         dinputs.scale_by_scalar(samples);
     }
+
+protected:
+    Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
+    {
+        if (y_pred.cols < 2) {
+            throw runtime_error("LossCategoricalCrossEntropy::forward: y_pred.cols must be >= 2");
+        }
+
+        const size_t samples = y_pred.rows;
+        const size_t classes = y_pred.cols;
+
+        Matrix sample_losses(1, samples, 0.0);
+
+        Matrix y_true_sparse;
+
+        if (y_true.is_col_vector() && y_true.rows == samples) {
+            y_true_sparse = y_true;
+        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+            y_true_sparse = y_true.transpose();
+        } else if (y_true.rows == samples && y_true.cols == classes) {
+            y_true_sparse = y_true.argmax();
+        } else {
+            throw runtime_error("LossCategoricalCrossEntropy::forward: y_true must be sparse (N,1) or one-hot (N,C)");
+        }
+
+        y_true_sparse.require_shape(samples, 1,
+            "LossCategoricalCrossEntropy::forward: y_true_sparse must have shape (N,1)");
+
+        for (size_t i = 0; i < samples; ++i) {
+            const size_t class_idx = y_true_sparse.as_size_t(i, 0);
+
+            if (class_idx >= classes) {
+                throw runtime_error("LossCategoricalCrossEntropy::forward: y_true class index out of range");
+            }
+
+            double confidence = clamp(y_pred(i, class_idx));
+            sample_losses(0, i) = -log(confidence);
+        }
+
+        return sample_losses;
+    }
 };
 
 class LossBinaryCrossentropy : public Loss
 {
 public:
-    Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
-    {
-        y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossBinaryCrossentropy::forward: y_pred and y_true must have the same shape");
-        
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
-
-        Matrix sample_losses(1, samples, 0.0);
-
-        for (size_t i = 0; i < samples; ++i) {
-            double loss_sum = 0.0;
-            for (size_t j = 0; j < outputs; ++j) {
-                double pred = clamp(y_pred(i, j));
-                double truth = y_true(i, j);
-
-                loss_sum += -(truth * log(pred) + (1.0 - truth) * log(1.0 - pred));
-            }
-
-            sample_losses(0, i) = loss_sum / static_cast<double>(outputs);
-        }
-
-        return sample_losses;
-    }
-
     void backward(const Matrix& y_pred, const Matrix& y_true) override
     {
         y_pred.require_non_empty("LossBinaryCrossentropy::backward: y_pred must be non-empty");
@@ -1289,33 +1298,37 @@ public:
 
         dinputs.scale_by_scalar(samples);
     }
-};
 
-class LossMeanSquaredError : public Loss
-{
-public:
+protected:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
         y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossMeanSquaredError::forward: y_pred and y_true must have the same shape");
-
+            "LossBinaryCrossentropy::forward: y_pred and y_true must have the same shape");
+        
         const size_t samples = y_pred.rows;
         const size_t outputs = y_pred.cols;
 
         Matrix sample_losses(1, samples, 0.0);
 
         for (size_t i = 0; i < samples; ++i) {
-            double sum = 0.0;
+            double loss_sum = 0.0;
             for (size_t j = 0; j < outputs; ++j) {
-                const double diff = y_true(i, j) - y_pred(i, j);
-                sum += diff * diff;
+                double pred = clamp(y_pred(i, j));
+                double truth = y_true(i, j);
+
+                loss_sum += -(truth * log(pred) + (1.0 - truth) * log(1.0 - pred));
             }
-            sample_losses(0, i) = sum / static_cast<double>(outputs);
+
+            sample_losses(0, i) = loss_sum / static_cast<double>(outputs);
         }
 
         return sample_losses;
     }
+};
 
+class LossMeanSquaredError : public Loss
+{
+public:
     void backward(const Matrix& y_pred, const Matrix& y_true) override
     {
         y_pred.require_non_empty("LossMeanSquaredError::backward: y_pred must be non-empty");
@@ -1337,15 +1350,12 @@ public:
 
         dinputs.scale_by_scalar(samples);
     }
-};
 
-class LossMeanAbsoluteError : public Loss
-{
-public:
+private:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
         y_true.require_shape(y_pred.rows, y_pred.cols,
-            "LossMeanAbsoluteError::forward: y_pred and y_true must have the same shape");
+            "LossMeanSquaredError::forward: y_pred and y_true must have the same shape");
 
         const size_t samples = y_pred.rows;
         const size_t outputs = y_pred.cols;
@@ -1355,14 +1365,19 @@ public:
         for (size_t i = 0; i < samples; ++i) {
             double sum = 0.0;
             for (size_t j = 0; j < outputs; ++j) {
-                sum += abs(y_true(i, j) - y_pred(i, j));
+                const double diff = y_true(i, j) - y_pred(i, j);
+                sum += diff * diff;
             }
             sample_losses(0, i) = sum / static_cast<double>(outputs);
         }
 
         return sample_losses;
     }
+};
 
+class LossMeanAbsoluteError : public Loss
+{
+public:
     void backward(const Matrix& y_pred, const Matrix& y_true) override
     {
         y_pred.require_non_empty("LossMeanAbsoluteError::backward: y_pred must be non-empty");
@@ -1389,6 +1404,28 @@ public:
         }
 
         dinputs.scale_by_scalar(samples);
+    }
+
+protected:
+    Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
+    {
+        y_true.require_shape(y_pred.rows, y_pred.cols,
+            "LossMeanAbsoluteError::forward: y_pred and y_true must have the same shape");
+
+        const size_t samples = y_pred.rows;
+        const size_t outputs = y_pred.cols;
+
+        Matrix sample_losses(1, samples, 0.0);
+
+        for (size_t i = 0; i < samples; ++i) {
+            double sum = 0.0;
+            for (size_t j = 0; j < outputs; ++j) {
+                sum += abs(y_true(i, j) - y_pred(i, j));
+            }
+            sample_losses(0, i) = sum / static_cast<double>(outputs);
+        }
+
+        return sample_losses;
     }
 };
 
@@ -1442,14 +1479,11 @@ public:
 class Optimizer
 {
 public:
-    double learning_rate;
     double current_learning_rate;
-    double decay;
-    size_t iterations;
 
     Optimizer(double learning_rate, double decay)
-        : learning_rate(learning_rate),
-          current_learning_rate(learning_rate),
+        : current_learning_rate(learning_rate),
+          learning_rate(learning_rate),
           decay(decay),
           iterations(0)
     {
@@ -1477,14 +1511,17 @@ public:
     }
 
     virtual void update_params(LayerDense& layer) = 0;
+
+protected:
+    double learning_rate;
+    double decay;
+    size_t iterations;
 };
 
 // SGD optimizer
 class OptimizerSGD : public Optimizer
 {
 public:
-    double momentum;
-
     OptimizerSGD(double learning_rate = 1.0, double decay = 0.0, double momentum = 0.0)
         : Optimizer(learning_rate, decay),
           momentum(momentum)
@@ -1544,14 +1581,15 @@ public:
             }
         }
     }
+
+private:
+    double momentum;
 };
 
 // Adagrad optimizer
 class OptimizerAdagrad : public Optimizer
 {
 public:
-    double epsilon;
-
     OptimizerAdagrad(double learning_rate = 1.0, double decay = 0.0, double epsilon = 1e-7)
         : Optimizer(learning_rate, decay),
           epsilon(epsilon)
@@ -1601,15 +1639,15 @@ public:
             layer.biases(0, j) += minus_learning_rate * g / (sqrt(layer.bias_cache(0, j)) + epsilon);
         }
     }
+
+private:
+    double epsilon;
 };
 
 // RMSprop optimizer
 class OptimizerRMSprop : public Optimizer
 {
 public:
-    double epsilon;
-    double rho;
-
     OptimizerRMSprop(double learning_rate = 0.001, double decay = 0.0, double epsilon = 1e-7, double rho = 0.9)
         : Optimizer(learning_rate, decay),
           epsilon(epsilon),
@@ -1664,16 +1702,16 @@ public:
             layer.biases(0, j) += minus_learning_rate * g / (sqrt(layer.bias_cache(0, j)) + epsilon);
         }
     }
+
+private:
+    double epsilon;
+    double rho;
 };
 
 // Adam optimizer
 class OptimizerAdam : public Optimizer
 {
 public:
-    double epsilon;
-    double beta1;
-    double beta2;
-
     OptimizerAdam(double learning_rate = 0.001, double decay = 0.0, double epsilon = 1e-7,
                   double beta1 = 0.9, double beta2 = 0.999)
         : Optimizer(learning_rate, decay),
@@ -1773,6 +1811,9 @@ public:
     }
 
 private:
+    double epsilon;
+    double beta1;
+    double beta2;
     double beta1_power;
     double beta2_power;
 };
@@ -1781,9 +1822,6 @@ private:
 class Accuracy
 {
 public:
-    size_t accumulated_sum = 0;
-    size_t accumulated_count = 0;
-
     virtual ~Accuracy() = default;
     virtual void init(const Matrix&) {}
     virtual void reset() {}
@@ -1818,6 +1856,10 @@ public:
 
 protected:
     virtual size_t compare(const Matrix&, const Matrix&) = 0;
+
+private:
+    size_t accumulated_sum = 0;
+    size_t accumulated_count = 0;
 };
 
 class AccuracyCategorical : public Accuracy
@@ -1828,6 +1870,7 @@ public:
     {
     }
 
+protected:
     size_t compare(const Matrix& y_pred, const Matrix& y_true) override
     {
         if(!binary) y_pred.require_cols(1, "AccuracyCategorical::compare: categorical y_pred must have shape (N,1)");
@@ -1929,6 +1972,7 @@ public:
 
     void reset() override { initialized = false; }
 
+protected:
     size_t compare(const Matrix& y_pred, const Matrix& y_true) override
     {
         y_pred.require_shape(y_true.rows, y_true.cols,
@@ -1961,19 +2005,6 @@ private:
 class Model
 {
 public:
-    LayerInput input_layer;
-    std::vector<Layer*> layers;
-    std::vector<LayerDense*> trainable_layers;
-
-    Loss* loss = nullptr;
-    bool loss_is_cce = false;
-    Accuracy* accuracy = nullptr;
-    Optimizer* optimizer = nullptr;
-    bool finalized = false;
-
-    Matrix output;
-    Matrix last_predictions;
-
     void add(Layer& layer)
     {
         layers.push_back(&layer);
@@ -2006,8 +2037,10 @@ public:
         if (layers.empty()) {
             throw runtime_error("Model::finalize: no layers added");
         }
+        if (dynamic_cast<LayerDropout*>(layers.back()) != nullptr) {
+            throw runtime_error("Model::finalize: final layer cannot be dropout");
+        }
 
-        loss->remember_trainable_layers(trainable_layers);
         finalized = true;
     }
 
@@ -2061,7 +2094,7 @@ public:
 
                 // calculating loss and accuracy
                 double reg_loss = 0.0;
-                const double data_loss = loss->calculate(output, batch_y, reg_loss);
+                const double data_loss = loss->calculate(output, batch_y, reg_loss, trainable_layers);
                 const double total_loss = data_loss + reg_loss;
 
                 last_predictions = predictions_from_output(output);
@@ -2116,7 +2149,7 @@ public:
             }
 
             double epoch_reg_loss = 0.0;
-            const double epoch_data_loss = loss->calculate_accumulated(epoch_reg_loss);
+            const double epoch_data_loss = loss->calculate_accumulated(epoch_reg_loss, trainable_layers);
             const double epoch_loss = epoch_data_loss + epoch_reg_loss;
             const double epoch_accuracy = accuracy->calculate_accumulated();
             cout << "training - accuracy: " << epoch_accuracy
@@ -2184,6 +2217,19 @@ public:
     }
 
 private:
+    LayerInput input_layer;
+    vector<Layer*> layers;
+    vector<LayerDense*> trainable_layers;
+
+    Loss* loss = nullptr;
+    bool loss_is_cce = false;
+    Accuracy* accuracy = nullptr;
+    Optimizer* optimizer = nullptr;
+    bool finalized = false;
+
+    Matrix output;
+    Matrix last_predictions;
+
     ActivationSoftmaxLossCategoricalCrossEntropy combined_softmax_ce;
 
     void forward_pass(const Matrix& X, const bool training)
@@ -2225,14 +2271,10 @@ int main()
 
     fashion_mnist_create(X, y, X_test, y_test);
 
-    ActivationReLU activation1;
-    LayerDense dense1(X.cols, 128, activation1, 0.0, 5e-4, 0.0, 5e-4);
-
-    ActivationReLU activation2;
-    LayerDense dense2(128, 128, activation2, 0.0, 5e-4, 0.0, 5e-4);
-
-    ActivationSoftmax activation3;
-    LayerDense dense3(128, 10, activation3);
+    LayerDense dense1(128, "relu", 0.0, 5e-4, 0.0, 5e-4);
+    LayerDense dense2(128, "relu", 0.0, 5e-4, 0.0, 5e-4);
+    LayerDropout dropout(0.1);
+    LayerDense dense3(10, "softmax");
 
     LossCategoricalCrossEntropy loss;
     AccuracyCategorical accuracy;
@@ -2241,11 +2283,12 @@ int main()
     Model model;
     model.add(dense1);
     model.add(dense2);
+    model.add(dropout);
     model.add(dense3);
     model.set(loss, accuracy, optimizer);
     model.finalize();
 
-    model.train(X, y, 2, 128, 100, &X_test, &y_test);
+    model.train(X, y, 1, 128, 100, &X_test, &y_test);
 
     cout << "extra validation after shuffling to check if the model assumes sorted labels:\n";
     X_test.shuffle_rows_with(y_test);
