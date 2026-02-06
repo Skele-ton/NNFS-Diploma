@@ -51,11 +51,11 @@ inline void multiplication_overflow_check(const size_t a, const size_t b, const 
     }
 }
 
-// TODO: standardize the labels of the data plotting somehow (make the middle equal 0 or something similar)
-// TODO: Make rng implementation thread-safe
+// TODO: add get_params, set_params to the model class
 // TODO: add predict method to the model class
-// TODO: make varaibles for classes private and add getters/setters where needed
-// TODO: add get_params, set_params, save_params, load_params, save, load methods to the model class
+// TODO: install matplot++ and make it plot scatter svg data (install cmake as well)
+// TODO: Make rng implementation thread-safe
+// TODO: add save_params, load_params, save, load methods to the model class
 //       maybe find a cpp library for reading/writing objects to files
 // TODO: seperate project into multiple files
 
@@ -82,14 +82,12 @@ double random_uniform()
 class Matrix
 {
 public:
-    size_t rows;
-    size_t cols;
     vector<double> data;
 
-    Matrix() : rows(0), cols(0), data() {}
+    Matrix() : data(), rows(0), cols(0) {}
 
     Matrix(size_t r, size_t c, double value = 0.0)
-        : rows(0), cols(0), data()
+        : data(), rows(0), cols(0)
     {
         assign(r, c, value);
     }
@@ -121,7 +119,7 @@ public:
         return data[r * cols + c];
     }
 
-    // === helper methods for shape validation
+    // helper methods for shape validation
     bool is_empty() const { return rows == 0 || cols == 0; }
 
     bool is_row_vector() const { return rows == 1 && cols > 0; }
@@ -149,7 +147,7 @@ public:
     {
         if (rows != r || cols != c) throw runtime_error(error_msg);
     }
-    // =======================================
+    // ===================================
 
     void print() const
     {
@@ -283,16 +281,16 @@ public:
             throw runtime_error("Matrix::dot: matrices must not be empty");
         }
 
-        if (a.cols != b.rows) {
+        if (a.get_cols() != b.get_rows()) {
             throw runtime_error("Matrix::dot: matrices have incompatible shapes");
         }
 
-        Matrix result(a.rows, b.cols, 0.0);
+        Matrix result(a.get_rows(), b.get_cols(), 0.0);
 
-        for (size_t i = 0; i < a.rows; ++i) {
-            for (size_t k = 0; k < a.cols; ++k) {
+        for (size_t i = 0; i < a.get_rows(); ++i) {
+            for (size_t k = 0; k < a.get_cols(); ++k) {
                 double aik = a(i, k);
-                for (size_t j = 0; j < b.cols; ++j) {
+                for (size_t j = 0; j < b.get_cols(); ++j) {
                     result(i, j) += aik * b(k, j);
                 }
             }
@@ -306,8 +304,8 @@ public:
     {
         require_non_empty("shuffle_rows_with: base matrix must be non-empty");
 
-        const bool y_row = (y.rows == 1 && y.cols == rows);
-        const bool y_col = (y.cols == 1 && y.rows == rows);
+        const bool y_row = (y.get_rows() == 1 && y.get_cols() == rows);
+        const bool y_col = (y.get_cols() == 1 && y.get_rows() == rows);
         if (!y_row && !y_col) {
             throw runtime_error("shuffle_rows_with: y must be shape (1,N) or (N,1), where N = base matrix rows");
         }
@@ -330,6 +328,13 @@ public:
             }
         }
     }
+
+    size_t get_rows() const { return rows; }
+    size_t get_cols() const { return cols; }
+
+private:
+    size_t rows;
+    size_t cols;
 };
 
 // training data
@@ -457,18 +462,18 @@ void generate_sine_data(size_t samples, Matrix& X_out, Matrix& y_out)
 void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& labels = Matrix())
 {
     points.require_non_empty("plot_scatter_svg: points must be non-empty");
-    if (points.cols < 2) {
+    if (points.get_cols() < 2) {
         throw runtime_error("plot_scatter_svg: invalid input data");
     }
 
-    const size_t num_points = points.rows;
+    const size_t num_points = points.get_rows();
 
     const bool has_labels = !labels.is_empty();
     if (has_labels) {
-        const bool column_vector_like = (labels.rows == num_points && labels.cols == 1);
-        const bool row_vector_like = (labels.rows == 1 && labels.cols == num_points);
+        const bool column_vector_like = (labels.get_rows() == num_points && labels.get_cols() == 1);
+        const bool row_vector_like = (labels.get_rows() == 1 && labels.get_cols() == num_points);
         if (!column_vector_like && !row_vector_like) {
-            throw runtime_error("plot_scatter_svg: labels must be shape (N,1) or (1,N) where N = points.rows");
+            throw runtime_error("plot_scatter_svg: labels must be shape (N,1) or (1,N) where N = points.get_rows()");
     }
 }
 
@@ -570,7 +575,7 @@ void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& la
 
         size_t class_id = 0;
         if (has_labels) {
-            if (labels.rows == num_points) class_id = labels.as_size_t(point_index, 0);
+            if (labels.get_rows() == num_points) class_id = labels.as_size_t(point_index, 0);
             else class_id = labels.as_size_t(0, point_index);
         }
         const size_t color_id = class_id  % num_of_colors;
@@ -589,29 +594,33 @@ void plot_scatter_svg(const string& path, const Matrix& points, const Matrix& la
 class Activation
 {
 public:
-    Matrix inputs;
-    Matrix output;
-    Matrix dinputs;
-
     virtual ~Activation() = default;
 
     virtual void forward(const Matrix& inputs_batch) = 0;
     virtual void backward(const Matrix& dvalues) = 0;
     virtual Matrix predictions(const Matrix& outputs) const = 0;
+
+    const Matrix& get_inputs() const { return inputs; }
+    const Matrix& get_output() const { return output; }
+    const Matrix& get_dinputs() const { return dinputs; }
+
+protected:
+    Matrix inputs;
+    Matrix output;
+    Matrix dinputs;
 };
 
 class ActivationReLU : public Activation
 {
 public:
-
     void forward(const Matrix& inputs_batch) override
     {
         inputs_batch.require_non_empty("ActivationReLU::forward: inputs must be non-empty");
 
         inputs = inputs_batch;
-        output.assign(inputs.rows, inputs.cols);
-        for (size_t i = 0; i < inputs.rows; ++i) {
-            for (size_t j = 0; j < inputs.cols; ++j) {
+        output.assign(inputs.get_rows(), inputs.get_cols());
+        for (size_t i = 0; i < inputs.get_rows(); ++i) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 output(i, j) = max(0.0, inputs(i, j));
             }
         }
@@ -620,12 +629,12 @@ public:
     void backward(const Matrix& dvalues) override
     {
         dvalues.require_non_empty("ActivationReLU::backward: dvalues must be non-empty");
-        dvalues.require_shape(inputs.rows, inputs.cols,
+        dvalues.require_shape(inputs.get_rows(), inputs.get_cols(),
             "ActivationReLU::backward: dvalues shape mismatch");
 
         dinputs = dvalues;
-        for (size_t i = 0; i < inputs.rows; ++i) {
-            for (size_t j = 0; j < inputs.cols; ++j) {
+        for (size_t i = 0; i < inputs.get_rows(); ++i) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 if (inputs(i, j) <= 0.0) {
                     dinputs(i, j) = 0.0;
                 }
@@ -645,17 +654,17 @@ public:
         inputs_batch.require_non_empty("ActivationSoftmax::forward: inputs must be non-empty");
 
         inputs = inputs_batch;
-        output.assign(inputs.rows, inputs.cols);
+        output.assign(inputs.get_rows(), inputs.get_cols());
 
-        for (size_t i = 0; i < inputs.rows; ++i) {
+        for (size_t i = 0; i < inputs.get_rows(); ++i) {
             double max_val = inputs(i, 0);
-            for (size_t j = 1; j < inputs.cols; ++j) {
+            for (size_t j = 1; j < inputs.get_cols(); ++j) {
                 double v = inputs(i, j);
                 if (v > max_val) max_val = v;
             }
 
             double sum = 0.0;
-            for (size_t j = 0; j < inputs.cols; ++j) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 double e = exp(inputs(i, j) - max_val);
                 output(i, j) = e;
                 sum += e;
@@ -665,7 +674,7 @@ public:
                 throw runtime_error("ActivationSoftmax: invalid sum of exponentials");
             }
 
-            for (size_t j = 0; j < inputs.cols; ++j) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 output(i, j) /= sum;
             }
         }
@@ -674,13 +683,13 @@ public:
     void backward(const Matrix& dvalues) override
     {
         dvalues.require_non_empty("ActivationSoftmax::backward: dvalues must be non-empty");
-        dvalues.require_shape(output.rows, output.cols,
+        dvalues.require_shape(output.get_rows(), output.get_cols(),
             "ActivationSoftmax::backward: dvalues shape mismatch");
 
-        dinputs.assign(dvalues.rows, dvalues.cols);
+        dinputs.assign(dvalues.get_rows(), dvalues.get_cols());
 
-        const size_t samples = dvalues.rows;
-        const size_t classes = dvalues.cols;
+        const size_t samples = dvalues.get_rows();
+        const size_t classes = dvalues.get_cols();
 
         for (size_t i = 0; i < samples; ++i) { // O(C) per sample
             double alpha = 0.0;
@@ -696,8 +705,8 @@ public:
     Matrix predictions(const Matrix& outputs) const override
     {
         outputs.require_non_empty("ActivationSoftmax::predictions: outputs must be non-empty");
-        if(outputs.cols < 2) {
-            throw runtime_error("ActivationSoftmax::predictions: computation of softmax predictions requires outputs.cols >= 2");
+        if(outputs.get_cols() < 2) {
+            throw runtime_error("ActivationSoftmax::predictions: computation of softmax predictions requires outputs.get_cols() >= 2");
         }
 
         return outputs.argmax();
@@ -713,9 +722,9 @@ public:
         inputs_batch.require_non_empty("ActivationSigmoid::forward: inputs must be non-empty");
 
         inputs = inputs_batch;
-        output.assign(inputs.rows, inputs.cols);
-        for (size_t i = 0; i < inputs.rows; ++i) {
-            for (size_t j = 0; j < inputs.cols; ++j) {
+        output.assign(inputs.get_rows(), inputs.get_cols());
+        for (size_t i = 0; i < inputs.get_rows(); ++i) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 // stable sigmoid - prevents overflow for large negative values
                 const double inp = inputs(i, j);
 
@@ -732,12 +741,12 @@ public:
     void backward(const Matrix& dvalues) override
     {
         dvalues.require_non_empty("ActivationSigmoid::backward: dvalues must be non-empty");
-        dvalues.require_shape(output.rows, output.cols,
+        dvalues.require_shape(output.get_rows(), output.get_cols(),
             "ActivationSigmoid::backward: dvalues shape mismatch");
 
-        dinputs.assign(dvalues.rows, dvalues.cols);
-        for (size_t i = 0; i < dvalues.rows; ++i) {
-            for (size_t j = 0; j < dvalues.cols; ++j) {
+        dinputs.assign(dvalues.get_rows(), dvalues.get_cols());
+        for (size_t i = 0; i < dvalues.get_rows(); ++i) {
+            for (size_t j = 0; j < dvalues.get_cols(); ++j) {
                 const double s = output(i, j);
                 dinputs(i, j) = dvalues(i, j) * (1.0 - s) * s;
             }
@@ -748,9 +757,9 @@ public:
     {
         outputs.require_non_empty("ActivationSigmoid::predictions: outputs must be non-empty");
 
-        Matrix preds(outputs.rows, outputs.cols);
-        for (size_t i = 0; i < outputs.rows; ++i) {
-            for (size_t j = 0; j < outputs.cols; ++j) {
+        Matrix preds(outputs.get_rows(), outputs.get_cols());
+        for (size_t i = 0; i < outputs.get_rows(); ++i) {
+            for (size_t j = 0; j < outputs.get_cols(); ++j) {
                 preds(i, j) = outputs(i, j) > 0.5 ? 1.0 : 0.0;
             }
         }
@@ -773,7 +782,7 @@ public:
     void backward(const Matrix& dvalues) override
     {
         dvalues.require_non_empty("ActivationLinear::backward: dvalues must be non-empty");
-        dvalues.require_shape(inputs.rows, inputs.cols,
+        dvalues.require_shape(inputs.get_rows(), inputs.get_cols(),
             "ActivationLinear::backward: dvalues shape mismatch");
         
         dinputs = dvalues;
@@ -786,15 +795,21 @@ public:
 class Layer
 {
 public:
-    Matrix inputs;
-    Matrix output;
-    Matrix dinputs;
-    Activation* activation = nullptr;
-
     virtual ~Layer() = default;
 
     virtual void forward(const Matrix& inputs_batch, bool training) = 0;
     virtual void backward(const Matrix& dvalues, bool include_activation = true) = 0;
+
+    const Activation* get_activation() const { return activation; }
+    const Matrix& get_inputs() const { return inputs; }
+    const Matrix& get_output() const { return output; }
+    const Matrix& get_dinputs() const { return dinputs; }
+
+protected:
+    Matrix inputs;
+    Matrix output;
+    Matrix dinputs;
+    Activation* activation = nullptr;
 };
 
 // dense layer with weights, biases and an activation function
@@ -803,14 +818,6 @@ class LayerDense : public Layer
 public:
     Matrix weights;
     Matrix biases;
-
-    Matrix dweights;
-    Matrix dbiases;
-
-    double weight_regularizer_l1;
-    double weight_regularizer_l2;
-    double bias_regularizer_l1;
-    double bias_regularizer_l2;
 
     Matrix weight_momentums;
     Matrix bias_momentums;
@@ -867,7 +874,7 @@ public:
                 throw runtime_error("LayerDense::forward: weights must not be empty after initialization");
             }
 
-            size_t n_inputs = inputs.cols;
+            size_t n_inputs = inputs.get_cols();
 
             weights.assign(n_inputs, pending_n_neurons);
             for (size_t input = 0; input < n_inputs; ++input) {
@@ -879,22 +886,19 @@ public:
             inputs_init = true;
         }
 
-        inputs.require_cols(weights.rows, "LayerDense::forward: inputs.cols must match weights.rows");
-        biases.require_shape(1, weights.cols,
+        inputs.require_cols(weights.get_rows(), "LayerDense::forward: inputs.get_cols() must match weights.get_rows()");
+        biases.require_shape(1, weights.get_cols(),
             "LayerDense::forward: biases must be shape (1, n_neurons)");
 
         output = Matrix::dot(inputs, weights);
-        for (size_t i = 0; i < output.rows; ++i) {
-            for (size_t j = 0; j < output.cols; ++j) {
+        for (size_t i = 0; i < output.get_rows(); ++i) {
+            for (size_t j = 0; j < output.get_cols(); ++j) {
                 output(i, j) += biases(0, j);
             }
         }
 
-        if (!activation) {
-            throw runtime_error("LayerDense::forward: activation must be set");
-        }
         activation->forward(output);
-        output = activation->output;
+        output = activation->get_output();
     }
 
     void backward(const Matrix& dvalues, bool include_activation) override
@@ -903,16 +907,13 @@ public:
         weights.require_non_empty("LayerDense::backward: weights must be initialized (forward not called?)");
 
         dvalues.require_non_empty("LayerDense::backward: dvalues must be non-empty");
-        dvalues.require_shape(inputs.rows, weights.cols,
+        dvalues.require_shape(inputs.get_rows(), weights.get_cols(),
             "LayerDense::backward: dvalues shape mismatch");
 
         Matrix dactivation;
         if (include_activation) {
-            if (!activation) {
-                throw runtime_error("LayerDense::backward: activation must be set");
-            }
             activation->backward(dvalues);
-            dactivation = activation->dinputs;
+            dactivation = activation->get_dinputs();
         } else {
             dactivation = dvalues;
         }
@@ -920,9 +921,9 @@ public:
         const Matrix inputs_T = inputs.transpose();
         dweights = Matrix::dot(inputs_T, dactivation);
 
-        dbiases.assign(1, biases.cols, 0.0);
-        for (size_t i = 0; i < dactivation.rows; ++i) {
-            for (size_t j = 0; j < dactivation.cols; ++j) {
+        dbiases.assign(1, biases.get_cols(), 0.0);
+        for (size_t i = 0; i < dactivation.get_rows(); ++i) {
+            for (size_t j = 0; j < dactivation.get_cols(); ++j) {
                 dbiases(0, j) += dactivation(i, j);
             }
         }
@@ -934,8 +935,8 @@ public:
         if (has_w_l1 || has_w_l2) {
             const double weight_l2_times_two = weight_regularizer_l2 * 2.0;
 
-            for (size_t i = 0; i < weights.rows; ++i) {
-                for (size_t j = 0; j < weights.cols; ++j) {
+            for (size_t i = 0; i < weights.get_rows(); ++i) {
+                for (size_t j = 0; j < weights.get_cols(); ++j) {
                     const double w = weights(i, j);
 
                     if (has_w_l1) dweights(i, j) += weight_regularizer_l1 * ((w >= 0.0) ? 1.0 : -1.0);
@@ -950,7 +951,7 @@ public:
         if (has_b_l1 || has_b_l2) {
             const double bias_l2_times_two = bias_regularizer_l2 * 2.0;
 
-            for (size_t j = 0; j < biases.cols; ++j) {
+            for (size_t j = 0; j < biases.get_cols(); ++j) {
                 const double b = biases(0, j);
 
                 if (has_b_l1) dbiases(0, j) += bias_regularizer_l1 * ((b >= 0.0) ? 1.0 : -1.0);
@@ -962,7 +963,23 @@ public:
         dinputs = Matrix::dot(dactivation, weights_T);
     }
 
+    const Matrix& get_dweights() const { return dweights; }
+    const Matrix& get_dbiases() const { return dbiases; }
+
+    double get_weight_regularizer_l1() const { return weight_regularizer_l1; }
+    double get_weight_regularizer_l2() const { return weight_regularizer_l2; }
+    double get_bias_regularizer_l1() const { return bias_regularizer_l1; }
+    double get_bias_regularizer_l2() const { return bias_regularizer_l2; }
+
 private:
+    Matrix dweights;
+    Matrix dbiases;
+
+    double weight_regularizer_l1;
+    double weight_regularizer_l2;
+    double bias_regularizer_l1;
+    double bias_regularizer_l2;
+
     ActivationReLU activation_relu;
     ActivationSoftmax activation_softmax;
     ActivationSigmoid activation_sigmoid;
@@ -992,40 +1009,33 @@ public:
 
         inputs = inputs_batch;
 
-        scaled_binary_mask.assign(inputs.rows, inputs.cols);
-        output.assign(inputs.rows, inputs.cols);
+        scaled_binary_mask.assign(inputs.get_rows(), inputs.get_cols());
+        output.assign(inputs.get_rows(), inputs.get_cols());
 
-        for (size_t i = 0; i < inputs.rows; ++i) {
-            for (size_t j = 0; j < inputs.cols; ++j) {
+        for (size_t i = 0; i < inputs.get_rows(); ++i) {
+            for (size_t j = 0; j < inputs.get_cols(); ++j) {
                 const double mask = training ? ((random_uniform() < keep_rate) ? (1.0 / keep_rate) : 0.0) : 1.0;
                 scaled_binary_mask(i, j) = mask;
                 output(i, j) = inputs(i, j) * mask;
             }
         }
 
-        if (!activation) {
-            throw runtime_error("LayerDropout::forward: activation must be set");
-        }
         activation->forward(output);
-        output = activation->output;
+        output = activation->get_output();
     }
 
     void backward(const Matrix& dvalues, bool) override
     {
         dvalues.require_non_empty("LayerDropout::backward: dvalues must be non-empty");
-        dvalues.require_shape(scaled_binary_mask.rows, scaled_binary_mask.cols,
+        dvalues.require_shape(scaled_binary_mask.get_rows(), scaled_binary_mask.get_cols(),
             "LayerDropout::backward: dvalues shape mismatch");
 
-        Matrix dactivation;
-        if (!activation) {
-            throw runtime_error("LayerDropout::backward: activation must be set");
-        }
         activation->backward(dvalues);
-        dactivation = activation->dinputs;
+        Matrix dactivation = activation->get_dinputs();
 
-        dinputs.assign(dactivation.rows, dactivation.cols);
-        for (size_t i = 0; i < dactivation.rows; ++i) {
-            for (size_t j = 0; j < dactivation.cols; ++j) {
+        dinputs.assign(dactivation.get_rows(), dactivation.get_cols());
+        for (size_t i = 0; i < dactivation.get_rows(); ++i) {
+            for (size_t j = 0; j < dactivation.get_cols(); ++j) {
                 dinputs(i, j) = dactivation(i, j) * scaled_binary_mask(i, j);
             }
         }
@@ -1041,21 +1051,22 @@ private:
 class LayerInput
 {
 public:
-    Matrix output;
-
     void forward(const Matrix& inputs_batch)
     {
         inputs_batch.require_non_empty("LayerInput::forward: inputs must be non-empty");
         output = inputs_batch;
     }
+
+    const Matrix& get_output() const { return output; }
+
+private:
+    Matrix output;
 };
 
 // loss functions
 class Loss
 {
 public:
-    Matrix dinputs;
-
     virtual ~Loss() = default;
 
     double calculate(const Matrix& output, const Matrix& y_true)
@@ -1065,8 +1076,8 @@ public:
 
         Matrix sample_losses = forward(output, y_true);
 
-        sample_losses.require_shape(1, output.rows,
-            "Loss::calculate: per-sample losses must be of shape (1,output.rows) after forward");
+        sample_losses.require_shape(1, output.get_rows(),
+            "Loss::calculate: per-sample losses must be of shape (1,output.get_rows()) after forward");
 
         double sum = 0.0;
         for (double v : sample_losses.data) sum += v;
@@ -1109,7 +1120,11 @@ public:
 
     virtual void backward(const Matrix& y_pred, const Matrix& y_true) = 0;
 
+    const Matrix& get_dinputs() const { return dinputs; }
+
 protected:
+    Matrix dinputs;
+
     virtual Matrix forward(const Matrix& output, const Matrix& y_true) const = 0;
 
     static double clamp(double p)
@@ -1126,15 +1141,15 @@ private:
 
     static double regularization_loss(const LayerDense& layer)
     {
-        if (layer.weight_regularizer_l1 < 0.0 || layer.weight_regularizer_l2 < 0.0 ||
-            layer.bias_regularizer_l1 < 0.0 || layer.bias_regularizer_l2 < 0.0) {
+        if (layer.get_weight_regularizer_l1() < 0.0 || layer.get_weight_regularizer_l2() < 0.0 ||
+            layer.get_bias_regularizer_l1() < 0.0 || layer.get_bias_regularizer_l2() < 0.0) {
             throw runtime_error("Loss::regularization_loss: regularizer coefficients must be non-negative");
         }
 
         double regularization = 0.0;
 
-        const bool has_w_l1 = layer.weight_regularizer_l1 != 0.0;
-        const bool has_w_l2 = layer.weight_regularizer_l2 != 0.0;
+        const bool has_w_l1 = layer.get_weight_regularizer_l1() != 0.0;
+        const bool has_w_l2 = layer.get_weight_regularizer_l2() != 0.0;
 
         if(has_w_l1 || has_w_l2) {
             layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
@@ -1147,17 +1162,17 @@ private:
                 if (has_w_l2)  sum_sq  += weight * weight;
             }
 
-            regularization += layer.weight_regularizer_l1 * sum_abs + layer.weight_regularizer_l2 * sum_sq;
+            regularization += layer.get_weight_regularizer_l1() * sum_abs + layer.get_weight_regularizer_l2() * sum_sq;
         }
 
-        const bool has_b_l1 = layer.bias_regularizer_l1 != 0.0;
-        const bool has_b_l2 = layer.bias_regularizer_l2 != 0.0;
+        const bool has_b_l1 = layer.get_bias_regularizer_l1() != 0.0;
+        const bool has_b_l2 = layer.get_bias_regularizer_l2() != 0.0;
 
         if(has_b_l1 || has_b_l2) {
             layer.biases.require_non_empty("Loss::regularization_loss: biases must be non-empty");
             layer.weights.require_non_empty("Loss::regularization_loss: weights must be non-empty");
 
-            layer.biases.require_shape(1, layer.weights.cols,
+            layer.biases.require_shape(1, layer.weights.get_cols(),
                 "Loss::regularization_loss: biases must have shape (1, n_neurons)");
 
             double sum_abs = 0.0;
@@ -1168,7 +1183,7 @@ private:
                 if (has_b_l2) sum_sq  += bias * bias;
             }
 
-            regularization += layer.bias_regularizer_l1 * sum_abs + layer.bias_regularizer_l2 * sum_sq;
+            regularization += layer.get_bias_regularizer_l1() * sum_abs + layer.get_bias_regularizer_l2() * sum_sq;
         }
 
         return regularization;
@@ -1193,22 +1208,22 @@ public:
         y_pred.require_non_empty("LossCategoricalCrossEntropy::backward: y_pred must be non-empty");
         y_true.require_non_empty("LossCategoricalCrossEntropy::backward: y_true must be non-empty");
 
-        if (y_pred.cols < 2) {
-            throw runtime_error("LossCategoricalCrossEntropy::backward: y_pred.cols must be >= 2");
+        if (y_pred.get_cols() < 2) {
+            throw runtime_error("LossCategoricalCrossEntropy::backward: y_pred.get_cols() must be >= 2");
         }
 
-        const size_t samples = y_pred.rows;
-        const size_t classes  = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t classes  = y_pred.get_cols();
 
         dinputs.assign(samples, classes, 0.0);
 
         Matrix y_true_sparse;
 
-        if (y_true.is_col_vector() && y_true.rows == samples) {
+        if (y_true.is_col_vector() && y_true.get_rows() == samples) {
             y_true_sparse = y_true;
-        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+        } else if (y_true.is_row_vector() && y_true.get_cols() == samples) {
             y_true_sparse = y_true.transpose();
-        } else if (y_true.rows == samples && y_true.cols == classes) {
+        } else if (y_true.get_rows() == samples && y_true.get_cols() == classes) {
             y_true_sparse = y_true.argmax();
         } else {
             throw runtime_error("LossCategoricalCrossEntropy::backward: y_true must be sparse (N,1) or one-hot (N,C)");
@@ -1232,22 +1247,22 @@ public:
 protected:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
-        if (y_pred.cols < 2) {
-            throw runtime_error("LossCategoricalCrossEntropy::forward: y_pred.cols must be >= 2");
+        if (y_pred.get_cols() < 2) {
+            throw runtime_error("LossCategoricalCrossEntropy::forward: y_pred.get_cols() must be >= 2");
         }
 
-        const size_t samples = y_pred.rows;
-        const size_t classes = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t classes = y_pred.get_cols();
 
         Matrix sample_losses(1, samples, 0.0);
 
         Matrix y_true_sparse;
 
-        if (y_true.is_col_vector() && y_true.rows == samples) {
+        if (y_true.is_col_vector() && y_true.get_rows() == samples) {
             y_true_sparse = y_true;
-        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+        } else if (y_true.is_row_vector() && y_true.get_cols() == samples) {
             y_true_sparse = y_true.transpose();
-        } else if (y_true.rows == samples && y_true.cols == classes) {
+        } else if (y_true.get_rows() == samples && y_true.get_cols() == classes) {
             y_true_sparse = y_true.argmax();
         } else {
             throw runtime_error("LossCategoricalCrossEntropy::forward: y_true must be sparse (N,1) or one-hot (N,C)");
@@ -1279,11 +1294,11 @@ public:
         y_pred.require_non_empty("LossBinaryCrossentropy::backward: y_pred must be non-empty");
         y_true.require_non_empty("LossBinaryCrossentropy::backward: y_true must be non-empty");
 
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossBinaryCrossentropy::backward: y_pred and y_true must have the same shape");
 
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         dinputs.assign(samples, outputs, 0.0);
 
@@ -1302,11 +1317,11 @@ public:
 protected:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossBinaryCrossentropy::forward: y_pred and y_true must have the same shape");
         
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         Matrix sample_losses(1, samples, 0.0);
 
@@ -1334,11 +1349,11 @@ public:
         y_pred.require_non_empty("LossMeanSquaredError::backward: y_pred must be non-empty");
         y_true.require_non_empty("LossMeanSquaredError::backward: y_true must be non-empty");
 
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossMeanSquaredError::backward: y_pred and y_true must have the same shape");
 
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         dinputs.assign(samples, outputs, 0.0);
 
@@ -1354,11 +1369,11 @@ public:
 private:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossMeanSquaredError::forward: y_pred and y_true must have the same shape");
 
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         Matrix sample_losses(1, samples, 0.0);
 
@@ -1383,11 +1398,11 @@ public:
         y_pred.require_non_empty("LossMeanAbsoluteError::backward: y_pred must be non-empty");
         y_true.require_non_empty("LossMeanAbsoluteError::backward: y_true must be non-empty");
 
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossMeanAbsoluteError::backward: y_pred and y_true must have the same shape");
 
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         dinputs.assign(samples, outputs, 0.0);
 
@@ -1409,11 +1424,11 @@ public:
 protected:
     Matrix forward(const Matrix& y_pred, const Matrix& y_true) const override
     {
-        y_true.require_shape(y_pred.rows, y_pred.cols,
+        y_true.require_shape(y_pred.get_rows(), y_pred.get_cols(),
             "LossMeanAbsoluteError::forward: y_pred and y_true must have the same shape");
 
-        const size_t samples = y_pred.rows;
-        const size_t outputs = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t outputs = y_pred.get_cols();
 
         Matrix sample_losses(1, samples, 0.0);
 
@@ -1433,27 +1448,25 @@ protected:
 class ActivationSoftmaxLossCategoricalCrossEntropy
 {
 public:
-    Matrix dinputs;
-
     void backward(const Matrix& y_pred, const Matrix& y_true)
     {
         y_pred.require_non_empty("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred must be non-empty");
         y_true.require_non_empty("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_true must be non-empty");
 
-        if (y_pred.cols < 2) {
-            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred.cols must be >= 2");
+        if (y_pred.get_cols() < 2) {
+            throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_pred.get_cols() must be >= 2");
         }
 
-        const size_t samples = y_pred.rows;
-        const size_t classes = y_pred.cols;
+        const size_t samples = y_pred.get_rows();
+        const size_t classes = y_pred.get_cols();
 
         Matrix y_true_sparse;
 
-        if (y_true.is_col_vector() && y_true.rows == samples) {
+        if (y_true.is_col_vector() && y_true.get_rows() == samples) {
             y_true_sparse = y_true;
-        } else if (y_true.is_row_vector() && y_true.cols == samples) {
+        } else if (y_true.is_row_vector() && y_true.get_cols() == samples) {
             y_true_sparse = y_true.transpose();
-        } else if (y_true.rows == samples && y_true.cols == classes) {
+        } else if (y_true.get_rows() == samples && y_true.get_cols() == classes) {
             y_true_sparse = y_true.argmax();
         } else {
             throw runtime_error("ActivationSoftmaxLossCategoricalCrossEntropy::backward: y_true must be sparse (N,1) or one-hot (N,C)");
@@ -1473,17 +1486,20 @@ public:
 
         dinputs.scale_by_scalar(samples);
     }
+
+    const Matrix& get_dinputs() const { return dinputs; }
+
+private:
+    Matrix dinputs;
 };
 
 // optimizers
 class Optimizer
 {
 public:
-    double current_learning_rate;
-
     Optimizer(double learning_rate, double decay)
-        : current_learning_rate(learning_rate),
-          learning_rate(learning_rate),
+        : learning_rate(learning_rate),
+          current_learning_rate(learning_rate),
           decay(decay),
           iterations(0)
     {
@@ -1512,8 +1528,11 @@ public:
 
     virtual void update_params(LayerDense& layer) = 0;
 
+    double get_current_learning_rate() const { return current_learning_rate; }
+
 protected:
     double learning_rate;
+    double current_learning_rate;
     double decay;
     size_t iterations;
 };
@@ -1536,46 +1555,46 @@ public:
         layer.weights.require_non_empty("OptimizerSGD::update_params: layer.weights must be non-empty");
         layer.biases.require_non_empty("OptimizerSGD::update_params: layer.biases must be non-empty");
 
-        layer.biases.require_shape(1, layer.weights.cols, "OptimizerSGD::update_params: biases must have shape (1, n_neurons)");
+        layer.biases.require_shape(1, layer.weights.get_cols(), "OptimizerSGD::update_params: biases must have shape (1, n_neurons)");
 
-        layer.dweights.require_shape(layer.weights.rows, layer.weights.cols,
+        layer.get_dweights().require_shape(layer.weights.get_rows(), layer.weights.get_cols(),
             "OptimizerSGD::update_params: dweights must match weights shape");
-        layer.dbiases.require_shape(1, layer.biases.cols,
+        layer.get_dbiases().require_shape(1, layer.biases.get_cols(),
             "OptimizerSGD::update_params: dbiases must match biases shape");
 
-        const size_t w_rows = layer.weights.rows;
-        const size_t w_cols = layer.weights.cols;
-        const size_t b_cols = layer.biases.cols;
+        const size_t w_rows = layer.weights.get_rows();
+        const size_t w_cols = layer.weights.get_cols();
+        const size_t b_cols = layer.biases.get_cols();
 
         const double minus_learning_rate = -current_learning_rate;
 
         if (momentum == 0.0) {
             for (size_t i = 0; i < w_rows; ++i) {
                 for (size_t j = 0; j < w_cols; ++j) {
-                    layer.weights(i, j) += minus_learning_rate * layer.dweights(i, j);
+                    layer.weights(i, j) += minus_learning_rate * layer.get_dweights()(i, j);
                 }
             }
             for (size_t j = 0; j < b_cols; ++j) {
-                layer.biases(0, j) += minus_learning_rate * layer.dbiases(0, j);
+                layer.biases(0, j) += minus_learning_rate * layer.get_dbiases()(0, j);
             }
         } else {
-            if (layer.weight_momentums.rows != w_rows || layer.weight_momentums.cols != w_cols) {
+            if (layer.weight_momentums.get_rows() != w_rows || layer.weight_momentums.get_cols() != w_cols) {
                 layer.weight_momentums.assign(w_rows, w_cols, 0.0);
             }
-            if (layer.bias_momentums.rows != 1 || layer.bias_momentums.cols != b_cols) {
+            if (layer.bias_momentums.get_rows() != 1 || layer.bias_momentums.get_cols() != b_cols) {
                 layer.bias_momentums.assign(1, b_cols, 0.0);
             }
 
             for (size_t i = 0; i < w_rows; ++i) {
                 for (size_t j = 0; j < w_cols; ++j) {
-                    const double temp = momentum * layer.weight_momentums(i, j) + minus_learning_rate * layer.dweights(i, j);
+                    const double temp = momentum * layer.weight_momentums(i, j) + minus_learning_rate * layer.get_dweights()(i, j);
                     layer.weight_momentums(i, j) = temp;
                     layer.weights(i, j) += temp;
                 }
             }
 
             for (size_t j = 0; j < b_cols; ++j) {
-                const double temp = momentum * layer.bias_momentums(0, j) + minus_learning_rate * layer.dbiases(0, j);
+                const double temp = momentum * layer.bias_momentums(0, j) + minus_learning_rate * layer.get_dbiases()(0, j);
                 layer.bias_momentums(0, j) = temp;
                 layer.biases(0, j) += temp;
             }
@@ -1604,22 +1623,22 @@ public:
         layer.weights.require_non_empty("OptimizerAdagrad::update_params: layer.weights must be non-empty");
         layer.biases.require_non_empty("OptimizerAdagrad::update_params: layer.biases must be non-empty");
 
-        layer.biases.require_shape(1, layer.weights.cols,
+        layer.biases.require_shape(1, layer.weights.get_cols(),
             "OptimizerAdagrad::update_params: biases must have shape (1, n_neurons)");
 
-        layer.dweights.require_shape(layer.weights.rows, layer.weights.cols,
+        layer.get_dweights().require_shape(layer.weights.get_rows(), layer.weights.get_cols(),
             "OptimizerAdagrad::update_params: dweights must match weights shape");
-        layer.dbiases.require_shape(1, layer.biases.cols,
+        layer.get_dbiases().require_shape(1, layer.biases.get_cols(),
             "OptimizerAdagrad::update_params: dbiases must match biases shape");
 
-        const size_t w_rows = layer.weights.rows;
-        const size_t w_cols = layer.weights.cols;
-        const size_t b_cols = layer.biases.cols;
+        const size_t w_rows = layer.weights.get_rows();
+        const size_t w_cols = layer.weights.get_cols();
+        const size_t b_cols = layer.biases.get_cols();
 
-        if (layer.weight_cache.rows != w_rows || layer.weight_cache.cols != w_cols) {
+        if (layer.weight_cache.get_rows() != w_rows || layer.weight_cache.get_cols() != w_cols) {
             layer.weight_cache.assign(w_rows, w_cols, 0.0);
         }
-        if (layer.bias_cache.rows != 1 || layer.bias_cache.cols != b_cols) {
+        if (layer.bias_cache.get_rows() != 1 || layer.bias_cache.get_cols() != b_cols) {
             layer.bias_cache.assign(1, b_cols, 0.0);
         }
 
@@ -1627,14 +1646,14 @@ public:
 
         for (size_t i = 0; i < w_rows; ++i) {
             for (size_t j = 0; j < w_cols; ++j) {
-                const double g = layer.dweights(i, j);
+                const double g = layer.get_dweights()(i, j);
                 layer.weight_cache(i, j) += g * g;
                 layer.weights(i, j) += minus_learning_rate * g / (sqrt(layer.weight_cache(i, j)) + epsilon);
             }
         }
 
         for (size_t j = 0; j < b_cols; ++j) {
-            const double g = layer.dbiases(0, j);
+            const double g = layer.get_dbiases()(0, j);
             layer.bias_cache(0, j) += g * g;
             layer.biases(0, j) += minus_learning_rate * g / (sqrt(layer.bias_cache(0, j)) + epsilon);
         }
@@ -1666,22 +1685,22 @@ public:
         layer.weights.require_non_empty("OptimizerRMSprop::update_params: layer.weights must be non-empty");
         layer.biases.require_non_empty("OptimizerRMSprop::update_params: layer.biases must be non-empty");
 
-        layer.biases.require_shape(1, layer.weights.cols,
+        layer.biases.require_shape(1, layer.weights.get_cols(),
             "OptimizerRMSprop::update_params: biases must have shape (1, n_neurons)");
 
-        layer.dweights.require_shape(layer.weights.rows, layer.weights.cols,
+        layer.get_dweights().require_shape(layer.weights.get_rows(), layer.weights.get_cols(),
             "OptimizerRMSprop::update_params: dweights must match weights shape");
-        layer.dbiases.require_shape(1, layer.biases.cols,
+        layer.get_dbiases().require_shape(1, layer.biases.get_cols(),
             "OptimizerRMSprop::update_params: dbiases must match biases shape");
 
-        const size_t w_rows = layer.weights.rows;
-        const size_t w_cols = layer.weights.cols;
-        const size_t b_cols = layer.biases.cols;
+        const size_t w_rows = layer.weights.get_rows();
+        const size_t w_cols = layer.weights.get_cols();
+        const size_t b_cols = layer.biases.get_cols();
 
-        if (layer.weight_cache.rows != w_rows || layer.weight_cache.cols != w_cols) {
+        if (layer.weight_cache.get_rows() != w_rows || layer.weight_cache.get_cols() != w_cols) {
             layer.weight_cache.assign(w_rows, w_cols, 0.0);
         }
-        if (layer.bias_cache.rows != 1 || layer.bias_cache.cols != b_cols) {
+        if (layer.bias_cache.get_rows() != 1 || layer.bias_cache.get_cols() != b_cols) {
             layer.bias_cache.assign(1, b_cols, 0.0);
         }
 
@@ -1690,14 +1709,14 @@ public:
 
         for (size_t i = 0; i < w_rows; ++i) {
             for (size_t j = 0; j < w_cols; ++j) {
-                const double g = layer.dweights(i, j);
+                const double g = layer.get_dweights()(i, j);
                 layer.weight_cache(i, j) = rho * layer.weight_cache(i, j) + one_minus_rho * g * g;
                 layer.weights(i, j) += minus_learning_rate * g / (sqrt(layer.weight_cache(i, j)) + epsilon);
             }
         }
 
         for (size_t j = 0; j < b_cols; ++j) {
-            const double g = layer.dbiases(0, j);
+            const double g = layer.get_dbiases()(0, j);
             layer.bias_cache(0, j) = rho * layer.bias_cache(0, j) + one_minus_rho * g * g;
             layer.biases(0, j) += minus_learning_rate * g / (sqrt(layer.bias_cache(0, j)) + epsilon);
         }
@@ -1745,28 +1764,28 @@ public:
         layer.weights.require_non_empty("OptimizerAdam::update_params: layer.weights must be non-empty");
         layer.biases.require_non_empty("OptimizerAdam::update_params: layer.biases must be non-empty");
 
-        layer.biases.require_shape(1, layer.weights.cols,
+        layer.biases.require_shape(1, layer.weights.get_cols(),
             "OptimizerAdam::update_params: biases must have shape (1, n_neurons)");
 
-        layer.dweights.require_shape(layer.weights.rows, layer.weights.cols,
+        layer.get_dweights().require_shape(layer.weights.get_rows(), layer.weights.get_cols(),
             "OptimizerAdam::update_params: dweights must match weights shape");
-        layer.dbiases.require_shape(1, layer.biases.cols,
+        layer.get_dbiases().require_shape(1, layer.biases.get_cols(),
             "OptimizerAdam::update_params: dbiases must match biases shape");
 
-        const size_t w_rows = layer.weights.rows;
-        const size_t w_cols = layer.weights.cols;
-        const size_t b_cols = layer.biases.cols;
+        const size_t w_rows = layer.weights.get_rows();
+        const size_t w_cols = layer.weights.get_cols();
+        const size_t b_cols = layer.biases.get_cols();
 
-        if (layer.weight_momentums.rows != w_rows || layer.weight_momentums.cols != w_cols) {
+        if (layer.weight_momentums.get_rows() != w_rows || layer.weight_momentums.get_cols() != w_cols) {
             layer.weight_momentums.assign(w_rows, w_cols, 0.0);
         }
-        if (layer.weight_cache.rows != w_rows || layer.weight_cache.cols != w_cols) {
+        if (layer.weight_cache.get_rows() != w_rows || layer.weight_cache.get_cols() != w_cols) {
             layer.weight_cache.assign(w_rows, w_cols, 0.0);
         }
-        if (layer.bias_momentums.rows != 1 || layer.bias_momentums.cols != b_cols) {
+        if (layer.bias_momentums.get_rows() != 1 || layer.bias_momentums.get_cols() != b_cols) {
             layer.bias_momentums.assign(1, b_cols, 0.0);
         }
-        if (layer.bias_cache.rows != 1 || layer.bias_cache.cols != b_cols) {
+        if (layer.bias_cache.get_rows() != 1 || layer.bias_cache.get_cols() != b_cols) {
             layer.bias_cache.assign(1, b_cols, 0.0);
         }
 
@@ -1785,7 +1804,7 @@ public:
 
         for (size_t i = 0; i < w_rows; ++i) {
             for (size_t j = 0; j < w_cols; ++j) {
-                const double g = layer.dweights(i, j);
+                const double g = layer.get_dweights()(i, j);
 
                 layer.weight_momentums(i, j) = beta1 * layer.weight_momentums(i, j) + one_minus_beta1 * g;
                 layer.weight_cache(i, j) = beta2 * layer.weight_cache(i, j) + one_minus_beta2 * g * g;
@@ -1798,7 +1817,7 @@ public:
         }
 
         for (size_t j = 0; j < b_cols; ++j) {
-            const double g = layer.dbiases(0, j);
+            const double g = layer.get_dbiases()(0, j);
 
             layer.bias_momentums(0, j) = beta1 * layer.bias_momentums(0, j) + one_minus_beta1 * g;
             layer.bias_cache(0, j) = beta2 * layer.bias_cache(0, j) + one_minus_beta2 * g * g;
@@ -1830,9 +1849,9 @@ public:
         y_pred.require_non_empty("Accuracy::calculate: y_pred must be non-empty");
         y_true.require_non_empty("Accuracy::calculate: y_true must be non-empty");
 
-        multiplication_overflow_check(y_pred.rows, y_pred.cols, "Accuracy::calculate: total overflow");
+        multiplication_overflow_check(y_pred.get_rows(), y_pred.get_cols(), "Accuracy::calculate: total overflow");
         const size_t correct = compare(y_pred, y_true);
-        const size_t total = y_pred.cols * y_pred.rows;
+        const size_t total = y_pred.get_cols() * y_pred.get_rows();
         
         accumulated_sum += correct;
         accumulated_count += total;
@@ -1875,8 +1894,8 @@ protected:
     {
         if(!binary) y_pred.require_cols(1, "AccuracyCategorical::compare: categorical y_pred must have shape (N,1)");
 
-        const size_t pred_rows = y_pred.rows;
-        const size_t pred_cols = y_pred.cols;
+        const size_t pred_rows = y_pred.get_rows();
+        const size_t pred_cols = y_pred.get_cols();
 
         Matrix ground_truth;
 
@@ -1886,11 +1905,11 @@ protected:
 
             ground_truth = y_true;
         } else {
-            if (y_true.is_col_vector() && y_true.rows == pred_rows) {
+            if (y_true.is_col_vector() && y_true.get_rows() == pred_rows) {
                 ground_truth = y_true;
-            } else if (y_true.is_row_vector() && y_true.cols == pred_rows) {
+            } else if (y_true.is_row_vector() && y_true.get_cols() == pred_rows) {
                 ground_truth = y_true.transpose();
-            } else if (y_true.rows == pred_rows && y_true.cols >= 2) {
+            } else if (y_true.get_rows() == pred_rows && y_true.get_cols() >= 2) {
                 ground_truth = y_true.argmax();
             } else {
                 throw runtime_error(
@@ -1932,8 +1951,8 @@ public:
     {
         y_true.require_non_empty("AccuracyRegression::init: y_true must be non-empty");
 
-        const size_t samples = y_true.rows;
-        const size_t outputs = y_true.cols;
+        const size_t samples = y_true.get_rows();
+        const size_t outputs = y_true.get_cols();
 
         multiplication_overflow_check(samples, outputs, "AccuracyRegression::init: n overflow");
 
@@ -1975,13 +1994,13 @@ public:
 protected:
     size_t compare(const Matrix& y_pred, const Matrix& y_true) override
     {
-        y_pred.require_shape(y_true.rows, y_true.cols,
+        y_pred.require_shape(y_true.get_rows(), y_true.get_cols(),
             "AccuracyRegression::compare: y_pred and y_true must have the same shape");
 
         if (!initialized) init(y_true);
         
-        const size_t samples = y_true.rows;
-        const size_t outputs = y_true.cols;
+        const size_t samples = y_true.get_rows();
+        const size_t outputs = y_true.get_cols();
 
         size_t correct = 0;
         for (size_t i = 0; i < samples; ++i) {
@@ -2066,8 +2085,8 @@ public:
 
         size_t steps = 1;
         if (batch_size != 0) {
-            steps = X.rows / batch_size;
-            if (steps * batch_size < X.rows) ++steps;
+            steps = X.get_rows() / batch_size;
+            if (steps * batch_size < X.get_rows()) ++steps;
         }
 
         for (size_t epoch = 1; epoch <= epochs; ++epoch) {
@@ -2085,7 +2104,7 @@ public:
                     batch_y = y;
                 } else {
                     const size_t start = step * batch_size;
-                    const size_t end = min(start + batch_size, X.rows);
+                    const size_t end = min(start + batch_size, X.get_rows());
                     batch_X = X.slice_rows(start, end);
                     batch_y = y.slice_rows(start, end);
                 }
@@ -2107,7 +2126,7 @@ public:
 
                 if (use_combined) {
                     combined_softmax_ce.backward(output, batch_y);
-                    dvalues = &combined_softmax_ce.dinputs;
+                    dvalues = &combined_softmax_ce.get_dinputs();
 
                     Layer* last_layer = *iter;
                     auto* last_dense = dynamic_cast<LayerDense*>(last_layer);
@@ -2116,16 +2135,16 @@ public:
                     }
 
                     last_dense->backward(*dvalues, false);
-                    dvalues = &last_dense->dinputs;
+                    dvalues = &last_dense->get_dinputs();
                     ++iter;
                 } else {
                     loss->backward(output, batch_y);
-                    dvalues = &loss->dinputs;
+                    dvalues = &loss->get_dinputs();
                 }
 
                 for (; iter != layers.rend(); ++iter) {
                     (*iter)->backward(*dvalues);
-                    dvalues = &(*iter)->dinputs;
+                    dvalues = &(*iter)->get_dinputs();
                 }
 
                 // using optimizers
@@ -2143,7 +2162,7 @@ public:
                          << " (data loss: " << data_loss
                          << ", regularization loss: " << reg_loss
                          << ")"
-                         << ", learning rate: " << optimizer->current_learning_rate
+                         << ", learning rate: " << optimizer->get_current_learning_rate()
                          << '\n';
                 }
             }
@@ -2157,7 +2176,7 @@ public:
                  << " (data loss: " << epoch_data_loss
                  << ", regularization loss: " << epoch_reg_loss
                  << ")"
-                 << ", learning rate: " << optimizer->current_learning_rate
+                 << ", learning rate: " << optimizer->get_current_learning_rate()
                  << '\n';
 
             if (X_val && y_val) evaluate(*X_val, *y_val, batch_size, false);
@@ -2184,8 +2203,8 @@ public:
 
         size_t steps = 1;
         if (batch_size != 0) {
-            steps = X.rows / batch_size;
-            if (steps * batch_size < X.rows) ++steps;
+            steps = X.get_rows() / batch_size;
+            if (steps * batch_size < X.get_rows()) ++steps;
         }
 
         for (size_t step = 0; step < steps; ++step) {
@@ -2197,7 +2216,7 @@ public:
                 batch_y = y;
             } else {
                 const size_t start = step * batch_size;
-                const size_t end = min(start + batch_size, X.rows);
+                const size_t end = min(start + batch_size, X.get_rows());
                 batch_X = X.slice_rows(start, end);
                 batch_y = y.slice_rows(start, end);
             }
@@ -2215,6 +2234,9 @@ public:
              << ", loss: " << val_loss
              << '\n';
     }
+
+    const Matrix& get_output() const { return output; }
+    const Matrix& get_last_predictions() const { return last_predictions; }
 
 private:
     LayerInput input_layer;
@@ -2236,10 +2258,10 @@ private:
     {
         input_layer.forward(X);
 
-        const Matrix* current = &input_layer.output;
+        const Matrix* current = &input_layer.get_output();
         for (Layer* layer : layers) {
             layer->forward(*current, training);
-            current = &layer->output;
+            current = &layer->get_output();
         }
 
         output = *current;
@@ -2248,15 +2270,14 @@ private:
     bool output_is_softmax() const
     {
         if (layers.empty()) return false;
-        const Activation* activation = layers.back()->activation;
-        return activation && (dynamic_cast<const ActivationSoftmax*>(activation) != nullptr);
+        const Activation* activation = layers.back()->get_activation();
+        return (dynamic_cast<const ActivationSoftmax*>(activation) != nullptr);
     }
 
     Matrix predictions_from_output(const Matrix& outputs) const
     {
         if (layers.empty()) return outputs;
-        const Activation* activation = layers.back()->activation;
-        if (!activation) return outputs;
+        const Activation* activation = layers.back()->get_activation();
         return activation->predictions(outputs);
     }
 };
