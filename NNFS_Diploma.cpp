@@ -51,12 +51,11 @@ inline void multiplication_overflow_check(const size_t a, const size_t b, const 
     }
 }
 
-// TODO: add get_params, set_params to the model class
-// TODO: add predict method to the model class
 // TODO: install matplot++ and make it plot scatter svg data (install cmake as well)
 // TODO: Make rng implementation thread-safe
 // TODO: add save_params, load_params, save, load methods to the model class
 //       maybe find a cpp library for reading/writing objects to files
+// TODO: finish and fix tests
 // TODO: seperate project into multiple files
 
 
@@ -835,8 +834,7 @@ public:
         weight_regularizer_l2(weight_regularizer_l2),
         bias_regularizer_l1(bias_regularizer_l1),
         bias_regularizer_l2(bias_regularizer_l2),
-        inputs_init(false),
-        pending_n_neurons(n_neurons)
+        starting_n_neurons(n_neurons)
     {
         if (weight_regularizer_l1 < 0.0 || weight_regularizer_l2 < 0.0 ||
             bias_regularizer_l1 < 0.0 || bias_regularizer_l2 < 0.0) {
@@ -869,21 +867,18 @@ public:
 
         inputs.require_non_empty("LayerDense::forward: inputs must be non-empty");
 
+        // filling the weights in the shape of starting_n_neurons x inputs.get_cols(), in case they are empty
+        // will be ran when it's the first time data is passed through the layer
+        // but also if the weights are emptied afterwards and data is passed through again
         if (weights.is_empty()) {
-            if (inputs_init) {
-                throw runtime_error("LayerDense::forward: weights must not be empty after initialization");
-            }
-
             size_t n_inputs = inputs.get_cols();
 
-            weights.assign(n_inputs, pending_n_neurons);
+            weights.assign(n_inputs, starting_n_neurons);
             for (size_t input = 0; input < n_inputs; ++input) {
-                for (size_t neuron = 0; neuron < pending_n_neurons; ++neuron) {
+                for (size_t neuron = 0; neuron < starting_n_neurons; ++neuron) {
                     weights(input, neuron) = 0.1 * random_gaussian();
                 }
             }
-
-            inputs_init = true;
         }
 
         inputs.require_cols(weights.get_rows(), "LayerDense::forward: inputs.get_cols() must match weights.get_rows()");
@@ -971,6 +966,8 @@ public:
     double get_bias_regularizer_l1() const { return bias_regularizer_l1; }
     double get_bias_regularizer_l2() const { return bias_regularizer_l2; }
 
+    double get_starting_n_neurons() const { return starting_n_neurons; }
+
 private:
     Matrix dweights;
     Matrix dbiases;
@@ -980,13 +977,12 @@ private:
     double bias_regularizer_l1;
     double bias_regularizer_l2;
 
+    size_t starting_n_neurons;
+
     ActivationReLU activation_relu;
     ActivationSoftmax activation_softmax;
     ActivationSigmoid activation_sigmoid;
     ActivationLinear activation_linear;
-
-    bool inputs_init;
-    size_t pending_n_neurons;
 };
 
 // dropout layer
@@ -2050,9 +2046,6 @@ public:
 
     void finalize()
     {
-        if (!loss || !accuracy) {
-            throw runtime_error("Model::finalize: loss and accuracy must be set");
-        }
         if (layers.empty()) {
             throw runtime_error("Model::finalize: no layers added");
         }
@@ -2066,28 +2059,34 @@ public:
     void train(const Matrix& X, const Matrix& y, size_t epochs = 1, size_t batch_size = 0,
                size_t print_every = 100, const Matrix* X_val = nullptr, const Matrix* y_val = nullptr)
     {
-        if (!loss || !accuracy) {
-            throw runtime_error("Model::train: loss and accuracy must be set");
-        }
-        if (!optimizer) {
-            throw runtime_error("Model::train: optimizer must be set");
-        }
-        if (layers.empty()) {
-            throw runtime_error("Model::train: no layers added");
+        if (!finalized) finalize();
+
+        if (!loss || !accuracy || !optimizer) {
+            throw runtime_error("Model::train: loss, accuracy and optimizer must be set");
         }
 
         X.require_non_empty("Model::train: X must be non-empty");
         y.require_non_empty("Model::train: y must be non-empty");
 
-        if (!finalized) finalize();
-
-        accuracy->init(y);
-
-        size_t steps = 1;
-        if (batch_size != 0) {
-            steps = X.get_rows() / batch_size;
-            if (steps * batch_size < X.get_rows()) ++steps;
+        if (batch_size > X.get_rows()) {
+            throw runtime_error("Model::train: batch_size cannot exceed number of samples");
         }
+
+        size_t samples = X.get_rows();
+
+        Matrix Y;
+        if (y.get_rows() == 1 && y.get_cols() == samples) {
+            Y = y.transpose();
+        } else {
+            y.require_rows(samples, "Model::train: non-row-vector y must have same number of rows as X");
+            Y = y;
+        }
+
+        accuracy->init(Y);
+
+        const size_t steps = calc_steps(samples, batch_size);
+
+        const Activation* last_activation = layers.back()->get_activation();
 
         for (size_t epoch = 1; epoch <= epochs; ++epoch) {
             cout << "epoch: " << epoch << '\n';
@@ -2099,15 +2098,7 @@ public:
                 Matrix batch_X;
                 Matrix batch_y;
 
-                if (batch_size == 0) {
-                    batch_X = X;
-                    batch_y = y;
-                } else {
-                    const size_t start = step * batch_size;
-                    const size_t end = min(start + batch_size, X.get_rows());
-                    batch_X = X.slice_rows(start, end);
-                    batch_y = y.slice_rows(start, end);
-                }
+                slice_batch(X, &Y, step, batch_size, batch_X, &batch_y);
 
                 forward_pass(batch_X, true);
 
@@ -2116,11 +2107,12 @@ public:
                 const double data_loss = loss->calculate(output, batch_y, reg_loss, trainable_layers);
                 const double total_loss = data_loss + reg_loss;
 
-                last_predictions = predictions_from_output(output);
+                last_predictions = last_activation->predictions(output);
                 const double acc = accuracy->calculate(last_predictions, batch_y);
 
                 // backward pass
-                const bool use_combined = output_is_softmax() && loss_is_cce;
+                const bool use_combined = (dynamic_cast<const ActivationSoftmax*>(last_activation) != nullptr) && loss_is_cce;
+
                 const Matrix* dvalues;
                 auto iter = layers.rbegin();
 
@@ -2185,45 +2177,46 @@ public:
 
     void  evaluate(const Matrix& X, const Matrix& y, size_t batch_size = 0, bool reinit = true)
     {
+        if (!finalized) finalize();
+
         if (!loss || !accuracy) {
-            throw runtime_error("Model::evaluate: loss, and accuracy must be set");
-        }
-        if (layers.empty()) {
-            throw runtime_error("Model::evaluate: no layers added");
+            throw runtime_error("Model::evaluate: loss and accuracy must be set");
         }
 
         X.require_non_empty("Model::evaluate: X must be non-empty");
         y.require_non_empty("Model::evaluate: y must be non-empty");
 
-        if (!finalized) finalize();
+        if (batch_size > X.get_rows()) {
+            throw runtime_error("Model::evaluate: batch_size cannot exceed number of samples");
+        }
 
-        if (reinit) accuracy->init(y);
+        size_t samples = X.get_rows();
+
+        Matrix Y;
+        if (y.get_rows() == 1 && y.get_cols() == samples) {
+            Y = y.transpose();
+        } else {
+            y.require_rows(samples, "Model::evaluate: non-row-vector y must have same number of rows as X");
+            Y = y;
+        }
+
+        if (reinit) accuracy->init(Y);
         loss->new_pass();
         accuracy->new_pass();
 
-        size_t steps = 1;
-        if (batch_size != 0) {
-            steps = X.get_rows() / batch_size;
-            if (steps * batch_size < X.get_rows()) ++steps;
-        }
+        const size_t steps = calc_steps(samples, batch_size);
+
+        const Activation* last_activation = layers.back()->get_activation();
 
         for (size_t step = 0; step < steps; ++step) {
             Matrix batch_X;
             Matrix batch_y;
 
-            if (batch_size == 0) {
-                batch_X = X;
-                batch_y = y;
-            } else {
-                const size_t start = step * batch_size;
-                const size_t end = min(start + batch_size, X.get_rows());
-                batch_X = X.slice_rows(start, end);
-                batch_y = y.slice_rows(start, end);
-            }
+            slice_batch(X, &Y, step, batch_size, batch_X, &batch_y);
 
             forward_pass(batch_X, false);
             loss->calculate(output, batch_y);
-            last_predictions = predictions_from_output(output);
+            last_predictions = last_activation->predictions(output);
             accuracy->calculate(last_predictions, batch_y);
         }
 
@@ -2233,6 +2226,99 @@ public:
         cout << "validation - accuracy: " << val_acc
              << ", loss: " << val_loss
              << '\n';
+    }
+
+    Matrix predict(const Matrix& X, size_t batch_size = 0)
+    {
+        if (!finalized) finalize();
+
+        X.require_non_empty("Model::predict: X must be non-empty");
+
+        if (batch_size > X.get_rows()) {
+            throw runtime_error("Model::predict: batch_size cannot exceed number of samples");
+        }
+
+        const size_t samples = X.get_rows();
+
+        const size_t steps = calc_steps(samples, batch_size);
+
+        Matrix predictions;
+        bool preds_init = false;
+
+        const Activation* last_activation = layers.back()->get_activation();
+
+        for (size_t step = 0; step < steps; ++step) {
+            Matrix batch_X;
+
+            slice_batch(X, nullptr, step, batch_size, batch_X, nullptr);
+
+            forward_pass(batch_X, false);
+            last_predictions = last_activation->predictions(output);
+
+            last_predictions.require_rows(batch_X.get_rows(), "Model::predict: predictions must have same rows as batch_X");
+
+            if (!preds_init) {
+                predictions.assign(samples, last_predictions.get_cols());
+                preds_init = true;
+            } else {
+                last_predictions.require_cols(predictions.get_cols(), "Model::predict: predictions cols mismatch across batches");
+            }
+
+            const size_t start = step * batch_size;
+            for (size_t i = 0; i < last_predictions.get_rows(); ++i) {
+                for (size_t j = 0; j < last_predictions.get_cols(); ++j) {
+                    predictions(start + i, j) = last_predictions(i, j);
+                }
+            }
+        }
+
+        return predictions;
+    }
+
+    vector<Matrix> get_params() const
+    {
+        vector<Matrix> params;
+        params.reserve(trainable_layers.size() * 2);
+        for (const LayerDense* layer : trainable_layers) {
+            if (!layer) continue;
+            params.push_back(layer->weights);
+            params.push_back(layer->biases);
+        }
+        return params;
+    }
+
+    void set_params(const vector<Matrix>& params)
+    {
+        if (trainable_layers.empty()) {
+            if (!params.empty()) {
+                throw runtime_error("Model::set_params: no trainable layers in model");
+            }
+            return;
+        }
+
+        const size_t layers_size = trainable_layers.size();
+        if (params.size() != layers_size * 2) {
+            throw runtime_error("Model::set_params: params size must be 2 * trainable_layers.size()");
+        }
+
+        for (size_t i = 0; i < layers_size; ++i) {
+            const Matrix& w = params[i * 2];
+            const Matrix& b = params[i * 2 + 1];
+
+            w.require_non_empty("Model::set_params: weights must be non-empty");
+            b.require_non_empty("Model::set_params: biases must be non-empty");
+            b.require_shape(1, w.get_cols(), "Model::set_params: biases must have shape (1, n_neurons)");
+
+            if (i > 0) {
+                const Matrix& prev_w = params[(i - 1) * 2];
+                prev_w.require_cols(w.get_rows(), "Model::set_params: consecutive weight matrices must be shape-compatible");
+            }
+
+            LayerDense* layer = trainable_layers[i];
+
+            layer->weights = w;
+            layer->biases = b;
+        }
     }
 
     const Matrix& get_output() const { return output; }
@@ -2254,6 +2340,30 @@ private:
 
     ActivationSoftmaxLossCategoricalCrossEntropy combined_softmax_ce;
 
+    static size_t calc_steps(size_t samples, size_t batch_size)
+    {
+        if (batch_size == 0) return 1;
+
+        size_t steps = samples / batch_size;
+        if (steps * batch_size < samples) ++steps;
+        return steps;
+    }
+
+    static void slice_batch(const Matrix& X, const Matrix* Y, size_t step, 
+                            size_t batch_size, Matrix& batch_X, Matrix* batch_Y)
+    {
+        if (batch_size == 0) {
+            batch_X = X;
+            if (Y && batch_Y) *batch_Y = *Y;
+            return;
+        }
+
+        const size_t start = step * batch_size;
+        const size_t end = min(start + batch_size, X.get_rows());
+        batch_X = X.slice_rows(start, end);
+        if (Y && batch_Y) *batch_Y = Y->slice_rows(start, end);
+    }
+
     void forward_pass(const Matrix& X, const bool training)
     {
         input_layer.forward(X);
@@ -2266,25 +2376,40 @@ private:
 
         output = *current;
     }
-
-    bool output_is_softmax() const
-    {
-        if (layers.empty()) return false;
-        const Activation* activation = layers.back()->get_activation();
-        return (dynamic_cast<const ActivationSoftmax*>(activation) != nullptr);
-    }
-
-    Matrix predictions_from_output(const Matrix& outputs) const
-    {
-        if (layers.empty()) return outputs;
-        const Activation* activation = layers.back()->get_activation();
-        return activation->predictions(outputs);
-    }
 };
+
+namespace {
+void print_sample_predictions(
+    const Matrix& predictions, const Matrix& y_test, size_t num_of_samples)
+{
+    const size_t pred_rows = predictions.get_rows();
+
+    cout << "predict output shape: " << pred_rows
+         << "x" << predictions.get_cols() << '\n';
+
+    const vector<string> label_names = {
+        "T-shirt/top", "Trouser", "Pullover", "Dress", "Coat",
+        "Sandal", "Shirt", "Sneaker", "Bag", "Ankle boot"
+    };
+
+    cout << "sample predictions:\n";
+    const size_t samples_to_check = min<size_t>(num_of_samples, pred_rows);
+    for (size_t i = 0; i < samples_to_check; ++i) {
+        const size_t pred_id = (pred_rows == 1) ? predictions.as_size_t(0, i) : predictions.as_size_t(i, 0);
+        const size_t true_id = (y_test.get_rows() == 1) ? y_test.as_size_t(0, i) : y_test.as_size_t(i, 0);
+
+        cout << "  sample " << i
+             << " - predicted: " << label_names[pred_id] << " (" << pred_id << ")"
+             << ", actual: " << label_names[true_id] << " (" << true_id << ")"
+             << '\n';
+    }
+}
+}
 
 #ifndef NNFS_NO_MAIN
 int main()
 {
+    // loading dataset
     Matrix X;
     Matrix y;
     Matrix X_test;
@@ -2292,6 +2417,7 @@ int main()
 
     fashion_mnist_create(X, y, X_test, y_test);
 
+    // creating model
     LayerDense dense1(128, "relu", 0.0, 5e-4, 0.0, 5e-4);
     LayerDense dense2(128, "relu", 0.0, 5e-4, 0.0, 5e-4);
     LayerDropout dropout(0.1);
@@ -2310,6 +2436,13 @@ int main()
     model.finalize();
 
     model.train(X, y, 1, 128, 100, &X_test, &y_test);
+
+    vector<Matrix> params = model.get_params();
+    model.set_params(params);
+
+    Matrix preds = model.predict(X_test, 128);
+
+    print_sample_predictions(preds, y_test, 100);
 
     cout << "extra validation after shuffling to check if the model assumes sorted labels:\n";
     X_test.shuffle_rows_with(y_test);
